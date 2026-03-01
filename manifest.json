@@ -1,0 +1,26 @@
+{
+  "id": "org.xulov.stalker.v7",
+  "version": "1.2.1",
+  "name": "XuloV Stalker Multi",
+  "description": "Addon Stalker com 5 servidores separados",
+  "resources": ["catalog", "stream", "meta"],
+  "types": ["tv"],
+  "idPrefixes": ["stalker:"],
+  "catalogs": [
+    {
+      "type": "tv",
+      "id": "stalker_channels_v7",
+      "name": "Canais Stalker",
+      "extra": [
+        { "name": "genre", "isRequired": false },
+        { "name": "search", "isRequired": false },
+        { "name": "skip", "isRequired": false }
+      ]
+    }
+  ],
+  "behaviorHints": {
+    "configurable": true,
+    "configurationRequired": false
+  }
+}
+

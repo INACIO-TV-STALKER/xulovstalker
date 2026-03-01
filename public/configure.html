@@ -1,33 +1,58 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8">
-  <title>Stalker IPTV Config</title>
+  <meta charset="UTF-8">
+  <title>Xulo Stalker IPTV</title>
+  <style>
+    body { font-family: Arial; padding: 20px; }
+    input { width: 100%; margin-bottom: 8px; padding: 6px; }
+    .list { border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; }
+    button { padding: 10px; width: 100%; }
+  </style>
 </head>
 <body>
-  <h2>Adicionar Lista Stalker</h2>
 
-  <textarea id="config" rows="15" cols="80">
-{
-  "lists": [
-    {
-      "name": "Minha Lista",
-      "portalUrl": "http://example.com/stalker_portal",
-      "mac": "00:1A:79:00:00:00"
-    }
-  ]
+<h2>Configurar Listas Stalker (até 5)</h2>
+
+<form id="form"></form>
+
+<button onclick="install()">Instalar Addon</button>
+
+<script>
+const form = document.getElementById("form")
+
+for (let i = 1; i <= 5; i++) {
+  form.innerHTML += `
+    <div class="list">
+      <h3>Lista ${i}</h3>
+      <input id="name${i}" placeholder="Nome da lista">
+      <input id="url${i}" placeholder="URL do servidor">
+      <input id="mac${i}" placeholder="MAC Address">
+    </div>
+  `
 }
-  </textarea>
 
-  <br><br>
-  <button onclick="install()">Instalar no Stremio</button>
+function install() {
+  const params = new URLSearchParams()
 
-  <script>
-    function install() {
-      const cfg = encodeURIComponent(document.getElementById('config').value);
-      const url = `stremio://addon-install?url=${location.origin}/manifest.json?config=${cfg}`;
-      window.location.href = url;
+  for (let i = 1; i <= 5; i++) {
+    const name = document.getElementById(`name${i}`).value
+    const url = document.getElementById(`url${i}`).value
+    const mac = document.getElementById(`mac${i}`).value
+
+    if (name && url && mac) {
+      params.append(`l${i}`, JSON.stringify({ name, url, mac }))
     }
-  </script>
+  }
+
+  const addonUrl =
+    location.origin + "/manifest.json?" + params.toString()
+
+  window.location.href =
+    "stremio://addon-install?url=" +
+    encodeURIComponent(addonUrl)
+}
+</script>
+
 </body>
 </html>
