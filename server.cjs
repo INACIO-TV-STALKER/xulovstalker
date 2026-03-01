@@ -100,18 +100,28 @@ app.get("/proxy/:config/:channelId", async (req, res) => {
             const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
             console.log(`[PROXY] Tizen TV a pedir canal ${channelId}...`);
 
-            // Headers críticos para a Samsung TV
-            res.setHeader("Access-Control-Allow-Origin", "*");
-            res.setHeader("Content-Type", "video/mp2t");
+            // NOVA LÓGICA DE VÍDEO: O Axios segue redirecionamentos (302) automaticamente!
+            try {
+                const videoResponse = await axios({
+                    method: 'get',
+                    url: finalUrl,
+                    headers: auth.authData.headers,
+                    responseType: 'stream', // Fundamental para não rebentar a memória do Render
+                    maxRedirects: 5
+                });
 
-            const protocol = finalUrl.startsWith("https") ? https : http;
-            const videoReq = protocol.get(finalUrl, { headers: auth.authData.headers }, (vRes) => {
-                res.writeHead(vRes.statusCode, vRes.headers);
-                vRes.pipe(res);
-            });
+                res.setHeader("Access-Control-Allow-Origin", "*");
+                // Em vez de forçar um formato, deixamos o portal ditar o tipo correto (HLS ou TS)
+                res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp2t");
 
-            videoReq.on('error', () => res.status(500).end());
-            req.on('close', () => videoReq.destroy());
+                // Envia o fluxo de vídeo para a TV
+                videoResponse.data.pipe(res);
+
+            } catch (vidErr) {
+                console.log("Erro no stream:", vidErr.message);
+                res.status(500).end();
+            }
+
         } else {
             res.status(404).end();
         }
