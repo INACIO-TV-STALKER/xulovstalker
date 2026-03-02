@@ -50,11 +50,9 @@ const addon = {
         } catch (e) { return null; }
     },
 
-    // MANIFESTO: Vai buscar as categorias em tempo real!
     async getManifest(configBase64) {
         const config = this.parseConfig(configBase64);
         let options = ["Todas"];
-
         if (config) {
             const auth = await this.authenticate(config.url, config);
             if (auth) {
@@ -64,15 +62,14 @@ const addon = {
                     const rawCats = catRes.data?.js?.data || catRes.data?.js || [];
                     const categories = Array.isArray(rawCats) ? rawCats : Object.values(rawCats);
                     categories.forEach(c => { if (c.title) options.push(c.title); });
-                } catch (e) { console.log("Erro categorias:", e.message); }
+                } catch (e) {}
             }
         }
-
         return {
             id: "org.xulov.stalker.tizen",
-            version: "2.0.0",
+            version: "2.0.1",
             name: "XuloV Stalker Tizen" + (config ? " ✅" : ""),
-            description: "Otimizado para Samsung TV e Render",
+            description: "Otimizado para Samsung TV",
             resources: ["catalog", "stream", "meta"],
             types: ["tv"],
             idPrefixes: ["stalker:"],
@@ -89,17 +86,13 @@ const addon = {
         const config = this.parseConfig(configBase64);
         const auth = await this.authenticate(config.url, config);
         if (!auth) return { metas: [] };
-
         try {
             var genreSelected = (extra && extra.genre) ? extra.genre.trim() : "Todas";
-            
-            // Busca canais
             var url = auth.api + "type=itv&action=get_all_channels&sn=" + auth.authData.sn + "&token=" + auth.token + "&to_ch=10000&JsHttpRequest=1-0";
             var res = await axios.get(url, { headers: auth.authData.headers, timeout: 15000 });
             var rawData = res.data?.js?.data || res.data?.js || res.data?.data || [];
             var allChannels = Array.isArray(rawData) ? rawData : Object.values(rawData);
 
-            // Se for preciso filtrar por categoria, vamos buscar o ID da categoria
             if (genreSelected !== "Todas") {
                 const catUrl = `${auth.api}type=itv&action=get_genres&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                 const catRes = await axios.get(catUrl, { headers: auth.authData.headers });
@@ -112,7 +105,6 @@ const addon = {
 
             var metas = [];
             var seenIds = new Set();
-
             allChannels.forEach(function(ch) {
                 if (ch && ch.id && !seenIds.has(ch.id)) {
                     seenIds.add(ch.id);
@@ -121,53 +113,39 @@ const addon = {
                         name: ch.name || "Canal",
                         type: "tv",
                         poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "",
-                        posterShape: "square",
-                        description: ch.name || ""
+                        posterShape: "square"
                     });
                 }
             });
             return { metas: metas };
         } catch (e) { return { metas: [] }; }
-    }
+    }, // ESTA VÍRGULA AQUI É O QUE FALTA!
+
     async getStreams(type, id, configBase64, reqHost) {
         var parts = id.split(":");
         var channelId = parts[2];
         var channelName = parts.length >= 4 ? decodeURIComponent(parts[3]) : "Canal";
-        
         const config = this.parseConfig(configBase64);
         const auth = await this.authenticate(config.url, config);
-        
         if (!auth) return { streams: [] };
 
         try {
-            // Pede ao portal o link real do vídeo no momento do clique
             const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
             const sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
             const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
-            
             let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
             
             if (typeof streamUrl === 'string') {
-                // Limpa o link
                 const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-                console.log(`[STREAM] TV vai ligar-se diretamente a: ${finalUrl}`);
-
-                // Entrega o link direto à Samsung TV!
                 return {
                     streams: [{
                         url: finalUrl,
                         title: "▶️ " + channelName,
-                        behaviorHints: { 
-                            notWeb: true, // Diz ao Stremio para usar o player nativo da TV
-                            isLive: true 
-                        }
+                        behaviorHints: { notWeb: true, isLive: true }
                     }]
                 };
             }
-        } catch (e) {
-            console.log("Erro ao obter stream:", e.message);
-        }
-
+        } catch (e) {}
         return { streams: [] };
     }
 };
