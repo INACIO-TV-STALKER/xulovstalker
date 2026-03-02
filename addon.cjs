@@ -111,8 +111,6 @@ const addon = {
         const parts = id.split(":");
         const listIdx = parseInt(parts[1]);
         const channelId = parts[2];
-        
-        // RECUPERA O NOME DO CANAL PARA O BOTÃO VERDE
         const channelName = parts.length >= 4 ? decodeURIComponent(parts[3]) : "Canal IPTV";
         
         const lists = this.parseConfig(configBase64);
@@ -121,6 +119,7 @@ const addon = {
         if (!auth) return { streams: [] };
 
         try {
+            // 1. Pedir o link ao portal
             const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
             const sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
             const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
@@ -128,15 +127,25 @@ const addon = {
             
             if (streamUrl) {
                 const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|rtmp)\s+/, "").trim();
+
+                // --- O TRUQUE PARA NÃO PARAR AOS 23 SEGUNDOS ---
+                // Avisamos o portal que o streaming começou REALMENTE. 
+                // Alguns portais precisam deste "beijo" para não cortarem a ligação.
+                const startAction = `${auth.api}type=itv&action=itv_start_stream&ch_id=${channelId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                axios.get(startAction, { headers: auth.authData.headers }).catch(e => {});
                 
+                // Pedimos também a "short info" para simular o comportamento de uma box real
+                const infoAction = `${auth.api}type=itv&action=get_short_info&ch_id=${channelId}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+                axios.get(infoAction, { headers: auth.authData.headers }).catch(e => {});
+
                 return {
                     streams: [{
                         url: finalUrl,
-                        name: "XuloV Stalker",    // Aparece no topo do botão
-                        title: channelName,       // Aparece o NOME DO CANAL por baixo!
+                        name: "XuloV Direto",
+                        title: channelName + " (Sem Proxy)",
                         behaviorHints: { 
                             notWeb: true, 
-                            isLive: true 
+                            isLive: true
                         }
                     }]
                 };
@@ -146,6 +155,7 @@ const addon = {
         }
         return { streams: [] };
     }
+
 };
 
 module.exports = addon;
