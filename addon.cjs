@@ -107,7 +107,6 @@ const addon = {
             return { metas };
         } catch (e) { return { metas: [] }; }
     },
-
     async getStreams(type, id, configBase64) {
         const parts = id.split(":");
         const listIdx = parseInt(parts[1]);
@@ -119,10 +118,7 @@ const addon = {
         if (!auth) return { streams: [] };
 
         try {
-            // "Keep-Alive": Fazemos um pedido de perfil antes do link para segurar a sessão
-            const profileUrl = `${auth.api}type=stb&action=get_profile&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-            await axios.get(profileUrl, { headers: auth.authData.headers }).catch(() => {});
-
+            // 1. Pedir o link ao portal
             const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
             const sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
             const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
@@ -130,17 +126,31 @@ const addon = {
             
             if (streamUrl) {
                 const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|rtmp)\s+/, "").trim();
+                
+                // 2. Tentar manter a sessão viva (Keep-Alive silencioso)
+                // Fazemos um pequeno pedido de "itv_start_stream" para o portal saber que começámos
+                const keepAliveUrl = `${auth.api}type=itv&action=itv_start_stream&ch_id=${channelId}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+                axios.get(keepAliveUrl, { headers: auth.authData.headers }).catch(e => {});
+
                 return {
                     streams: [{
                         url: finalUrl,
-                        title: "Link Direto",
-                        behaviorHints: { notWeb: true, isLive: true }
+                        title: "📺 Link Principal (Direto)",
+                        behaviorHints: { 
+                            notWeb: true, 
+                            isLive: true,
+                            // Forçamos a Samsung a ignorar certas restrições de cache
+                            proxyHeaders: { "Connection": "keep-alive" } 
+                        }
                     }]
                 };
             }
-        } catch (e) {}
+        } catch (e) {
+            console.log("Erro no Stream:", e.message);
+        }
         return { streams: [] };
     }
+
 };
 
 module.exports = addon;
