@@ -96,10 +96,10 @@ const addon = {
             var channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
 
             const metas = channels.map(ch => ({
-                id: `xlv:${listIdx}:${ch.id}`,
+                id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name || "Canal")}`, // <-- NOME AQUI
                 name: ch.name || "Canal",
                 type: "tv",
-                poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "",
+                poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "https://telegra.ph/file/a85d95e09f6e3c0919313.png",
                 posterShape: "square"
             }));
 
@@ -112,13 +112,15 @@ const addon = {
         const listIdx = parseInt(parts[1]);
         const channelId = parts[2];
         
+        // RECUPERA O NOME DO CANAL PARA O BOTÃO VERDE
+        const channelName = parts.length >= 4 ? decodeURIComponent(parts[3]) : "Canal IPTV";
+        
         const lists = this.parseConfig(configBase64);
         const config = lists[listIdx];
         const auth = await this.authenticate(config);
         if (!auth) return { streams: [] };
 
         try {
-            // 1. Pedir o link ao portal
             const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
             const sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
             const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
@@ -127,20 +129,14 @@ const addon = {
             if (streamUrl) {
                 const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|rtmp)\s+/, "").trim();
                 
-                // 2. Tentar manter a sessão viva (Keep-Alive silencioso)
-                // Fazemos um pequeno pedido de "itv_start_stream" para o portal saber que começámos
-                const keepAliveUrl = `${auth.api}type=itv&action=itv_start_stream&ch_id=${channelId}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
-                axios.get(keepAliveUrl, { headers: auth.authData.headers }).catch(e => {});
-
                 return {
                     streams: [{
                         url: finalUrl,
-                        title: "📺 Link Principal (Direto)",
+                        name: "XuloV Stalker",    // Aparece no topo do botão
+                        title: channelName,       // Aparece o NOME DO CANAL por baixo!
                         behaviorHints: { 
                             notWeb: true, 
-                            isLive: true,
-                            // Forçamos a Samsung a ignorar certas restrições de cache
-                            proxyHeaders: { "Connection": "keep-alive" } 
+                            isLive: true 
                         }
                     }]
                 };
@@ -150,7 +146,6 @@ const addon = {
         }
         return { streams: [] };
     }
-
 };
 
 module.exports = addon;
