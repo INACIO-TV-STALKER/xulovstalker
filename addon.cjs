@@ -107,7 +107,6 @@ const addon = {
             };
         } catch (e) { return { metas: [] }; }
     },
-
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":");
         const listIdx = parseInt(parts[1]);
@@ -121,28 +120,29 @@ const addon = {
         if (!auth) return { streams: [] };
 
         try {
-            // Alguns portais usam 'itv' outros 'vod', para TV usamos 'itv'
-            // O comando 'ffrt' é o padrão, mas alguns aceitam apenas o ID
-            const cmd = `ffrt ${channelId}`; 
+            // TENTATIVA 1: O comando padrão ffrt
+            const cmd = `ffrt ${channelId}`;
             const linkUrl = `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent(cmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             
-            const res = await axiosGetWithAgent(linkUrl, { 
-                headers: auth.authData.headers, 
-                timeout: 10000 
-            });
+            let res = await axiosGetWithAgent(linkUrl, { headers: auth.authData.headers, timeout: 8000 });
+            let finalUrl = res.data?.js?.data || res.data?.js || res.data?.result;
 
-            // O Stalker pode responder dentro de 'js.data', 'js' ou direto no 'result'
-            let finalUrl = res.data?.js?.data || res.data?.js || res.data?.result || res.data;
+            // TENTATIVA 2: Se a primeira falhou, tentamos sem o prefixo 'ffrt'
+            if (!finalUrl || typeof finalUrl !== 'string') {
+                const linkUrlFallback = `${auth.api}type=itv&action=create_link&cmd=${channelId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                res = await axiosGetWithAgent(linkUrlFallback, { headers: auth.authData.headers, timeout: 8000 });
+                finalUrl = res.data?.js?.data || res.data?.js || res.data?.result;
+            }
 
-            if (finalUrl && typeof finalUrl === 'string') {
-                // Limpeza rigorosa: remove prefixos de protocolo que o Stremio não entende
-                finalUrl = finalUrl.replace(/^(ffrt|ffmpeg|rtmp|http:\/\/localhost[:0-9]*)\s+/, "").trim();
+            if (finalUrl && typeof finalUrl === 'string' && finalUrl.includes('http')) {
+                // Limpeza de caracteres estranhos que alguns portais enviam
+                finalUrl = finalUrl.replace(/^(ffrt|ffmpeg|rtmp)\s+/, "").trim();
 
                 return {
                     streams: [{
                         url: finalUrl,
                         name: "XuloV Direct",
-                        description: "✅ Canal Disponível",
+                        description: "✅ Link Gerado com Sucesso",
                         behaviorHints: {
                             notWeb: true,
                             isLive: true,
@@ -157,18 +157,19 @@ const addon = {
                 };
             }
         } catch (e) {
-            console.log("Erro no Stream:", e.message);
+            console.log("Erro na geração:", e.message);
         }
-        
-        // Se falhar, não retornamos vazio. Retornamos um link de erro para saberes o que se passa
+
+        // Se chegar aqui, é porque o portal recusou as duas formas
         return { 
             streams: [{ 
-                url: "http://error.com/video.mp4", 
-                name: "⚠️ Erro ao gerar link", 
-                description: "O Portal recusou o pedido ou o token expirou." 
+                url: "http://error.com/error.mp4", 
+                name: "❌ Portal Recusou (IP Bloqueado?)", 
+                description: "Tente usar uma VPN ou mudar o Player para VLC nas definições." 
             }] 
         };
     }
+
 };
 
 module.exports = addon;
