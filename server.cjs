@@ -8,6 +8,9 @@ const addon = require("./addon.cjs");
 const PORT = process.env.PORT || 3000;
 const app = express();
 
+// Criar agente HTTPS que ignora certificados autoassinados
+const httpsAgent = new https.Agent({ rejectUnauthorized: false }); // <-- ADICIONADO
+
 app.use(cors());
 app.use((req, res, next) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -89,7 +92,7 @@ app.get("/configure", (req, res) => {
                 function install() {
                     const boxes = document.querySelectorAll('.list-box');
                     if(boxes.length === 0) return alert("Adiciona pelo menos uma lista!");
-                    
+
                     const lists = Array.from(boxes).map(box => ({
                         name: box.querySelector('.name').value.trim(),
                         url: box.querySelector('.url').value.trim(),
@@ -135,9 +138,8 @@ app.get("/:config/meta/:type/:id.json", (req, res) => {
     let channelName = parts.length >= 4 ? decodeURIComponent(parts[3]) : "Canal IPTV";
     res.json({ meta: { id: req.params.id, type: "tv", name: channelName, posterShape: "square" } });
 });
-// ... (teu código inicial do server.cjs)
 
-// ROTA DO STREAM (Certifica-te que passas o host)
+// ROTA DO STREAM
 app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     const streams = await addon.getStreams(req.params.type, req.params.id, req.params.config, host);
@@ -149,7 +151,7 @@ app.get("/proxy/:config/:channelId", async (req, res) => {
     const { config, channelId } = req.params;
     const lists = addon.parseConfig(config);
     const configData = lists[0]; // Assume a primeira lista ou adapta conforme o ID no ID do canal
-    
+
     if (!configData) return res.status(400).end();
 
     const auth = await addon.authenticate(configData);
@@ -158,20 +160,22 @@ app.get("/proxy/:config/:channelId", async (req, res) => {
     try {
         const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
         const sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-        
-        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
+
+        // Adicionado httpsAgent à chamada
+        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, httpsAgent });
         let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || "";
 
         if (streamUrl) {
             const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|rtmp)\s+/, "").trim();
-            
-            // Fazemos o pedido do vídeo ao portal enviando os headers de MAG254
+
+            // Adicionado httpsAgent também ao pedido do vídeo
             const videoResponse = await axios({
                 method: 'get',
                 url: finalUrl,
-                headers: auth.authData.headers, // ENVIAR COOKIES E USER-AGENT
+                headers: auth.authData.headers,
                 responseType: 'stream',
-                timeout: 15000
+                timeout: 15000,
+                httpsAgent // <-- ADICIONADO
             });
 
             // Repassamos os headers do portal para a TV

@@ -1,5 +1,14 @@
 const axios = require("axios");
 const crypto = require("crypto");
+const https = require("https"); // <-- ADICIONADO
+
+// Criar agente HTTPS que ignora certificados autoassinados
+const httpsAgent = new https.Agent({ rejectUnauthorized: false }); // <-- ADICIONADO
+
+// Função auxiliar para fazer GET com o agente personalizado
+async function axiosGetWithAgent(url, options = {}) { // <-- ADICIONADO
+    return axios.get(url, { ...options, httpsAgent });
+}
 
 const getStalkerAuth = function(config, token) {
     var mac = (config.mac || "").toUpperCase();
@@ -36,7 +45,8 @@ const addon = {
         var url = baseUrl + "portal.php";
         try {
             var hUrl = url + "?type=stb&action=handshake&sn=" + authData.sn + "&JsHttpRequest=1-0";
-            var res = await axios.get(hUrl, { headers: authData.headers, timeout: 7000 });
+            // Substituído axios.get por axiosGetWithAgent
+            var res = await axiosGetWithAgent(hUrl, { headers: authData.headers, timeout: 7000 });
             var token = res.data?.js?.token || res.data?.token || null;
             if (token) {
                 return { token: token, api: url + "?", authData: getStalkerAuth(config, token) };
@@ -76,7 +86,8 @@ const addon = {
 
         try {
             var url = auth.api + "type=itv&action=get_all_channels&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
-            var res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
+            // Substituído axios.get por axiosGetWithAgent
+            var res = await axiosGetWithAgent(url, { headers: auth.authData.headers, timeout: 10000 });
             var rawData = res.data?.js?.data || res.data?.js || [];
             var channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
 
@@ -115,4 +126,3 @@ const addon = {
 };
 
 module.exports = addon;
-
