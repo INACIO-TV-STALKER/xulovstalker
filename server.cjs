@@ -146,48 +146,59 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     res.json(streams);
 });
 
-// O PROXY - ONDE O VÍDEO É RESOLVIDO
-app.get("/proxy/:config/:channelId", async (req, res) => {
-    const { config, channelId } = req.params;
-    const lists = addon.parseConfig(config);
-    const configData = lists[0]; // Assume a primeira lista ou adapta conforme o ID no ID do canal
-
-    if (!configData) return res.status(400).end();
-
-    const auth = await addon.authenticate(configData);
-    if (!auth) return res.status(401).end();
-
+// ROTA DO PROXY CORRIGIDA
+app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
+    const { config, listIdx, channelId } = req.params;
+    
     try {
-        const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
-        const sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+        const lists = addon.parseConfig(config);
+        const configData = lists[parseInt(listIdx)];
 
-        // Adicionado httpsAgent à chamada
+        if (!configData) return res.status(404).send("Lista não encontrada");
+
+        const auth = await addon.authenticate(configData);
+        if (!auth) return res.status(401).send("Falha na autenticação do Portal");
+
+        // 1. Pedir o link real ao portal
+        const cmd = `ffrt ${channelId}`;
+        const sUrl = `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent(cmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+
         const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, httpsAgent });
-        let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || "";
+        let streamUrl = linkRes.data?.js?.data || linkRes.data?.js || "";
 
-        if (streamUrl) {
+        if (streamUrl && typeof streamUrl === 'string') {
             const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|rtmp)\s+/, "").trim();
 
-            // Adicionado httpsAgent também ao pedido do vídeo
+            // 2. Criar a conexão com o fluxo de vídeo
             const videoResponse = await axios({
                 method: 'get',
                 url: finalUrl,
-                headers: auth.authData.headers,
+                headers: {
+                    'User-Agent': auth.authData.headers['User-Agent'],
+                    'Cookie': auth.authData.headers['Cookie']
+                },
                 responseType: 'stream',
-                timeout: 15000,
-                httpsAgent // <-- ADICIONADO
+                timeout: 20000,
+                httpsAgent
             });
 
-            // Repassamos os headers do portal para a TV
+            // 3. Repassar os headers e o fluxo de dados para o Stremio
             res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp2t");
+            
+            // O .pipe() faz o vídeo fluir sem carregar tudo na memória do Render
             videoResponse.data.pipe(res);
 
+            // Se o cliente (Stremio) fechar a conexão, paramos de baixar o vídeo
+            req.on('close', () => {
+                videoResponse.data.destroy();
+            });
+
         } else {
-            res.status(404).end();
+            res.status(404).send("URL de stream não encontrado no portal");
         }
     } catch (e) {
-        console.error("Erro no Proxy:", e.message);
-        res.status(500).end();
+        console.error("Erro no Túnel Proxy:", e.message);
+        if (!res.headersSent) res.status(500).send("Erro interno no túnel");
     }
 
 });

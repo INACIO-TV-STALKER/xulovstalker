@@ -109,64 +109,23 @@ const addon = {
     },
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":");
-        const listIdx = parseInt(parts[1]);
+        const listIdx = parts[1];
         const channelId = parts[2];
 
-        const lists = this.parseConfig(configBase64);
-        const config = lists[listIdx];
-        if (!config) return { streams: [] };
+        // Criamos o link que aponta para o TEU servidor Render
+        // Formato: https://teu-app.onrender.com/proxy/CONFIG/INDEX/ID
+        const proxyUrl = `https://${host}/proxy/${configBase64}/${listIdx}/${channelId}`;
 
-        const auth = await this.authenticate(config);
-        if (!auth) return { streams: [] };
-
-        try {
-            // TENTATIVA 1: O comando padrão ffrt
-            const cmd = `ffrt ${channelId}`;
-            const linkUrl = `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent(cmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-            
-            let res = await axiosGetWithAgent(linkUrl, { headers: auth.authData.headers, timeout: 8000 });
-            let finalUrl = res.data?.js?.data || res.data?.js || res.data?.result;
-
-            // TENTATIVA 2: Se a primeira falhou, tentamos sem o prefixo 'ffrt'
-            if (!finalUrl || typeof finalUrl !== 'string') {
-                const linkUrlFallback = `${auth.api}type=itv&action=create_link&cmd=${channelId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                res = await axiosGetWithAgent(linkUrlFallback, { headers: auth.authData.headers, timeout: 8000 });
-                finalUrl = res.data?.js?.data || res.data?.js || res.data?.result;
-            }
-
-            if (finalUrl && typeof finalUrl === 'string' && finalUrl.includes('http')) {
-                // Limpeza de caracteres estranhos que alguns portais enviam
-                finalUrl = finalUrl.replace(/^(ffrt|ffmpeg|rtmp)\s+/, "").trim();
-
-                return {
-                    streams: [{
-                        url: finalUrl,
-                        name: "XuloV Direct",
-                        description: "✅ Link Gerado com Sucesso",
-                        behaviorHints: {
-                            notWeb: true,
-                            isLive: true,
-                            proxyHeaders: {
-                                "common": {
-                                    "User-Agent": auth.authData.headers["User-Agent"],
-                                    "Cookie": auth.authData.headers["Cookie"]
-                                }
-                            }
-                        }
-                    }]
-                };
-            }
-        } catch (e) {
-            console.log("Erro na geração:", e.message);
-        }
-
-        // Se chegar aqui, é porque o portal recusou as duas formas
-        return { 
-            streams: [{ 
-                url: "http://error.com/error.mp4", 
-                name: "❌ Portal Recusou (IP Bloqueado?)", 
-                description: "Tente usar uma VPN ou mudar o Player para VLC nas definições." 
-            }] 
+        return {
+            streams: [{
+                url: proxyUrl,
+                name: "XuloV Proxy",
+                description: "Sinal tunelado pelo Render (Contorna bloqueio de IP)",
+                behaviorHints: {
+                    notWeb: true,
+                    isLive: true
+                }
+            }]
         };
     }
 
