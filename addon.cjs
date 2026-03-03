@@ -36,36 +36,28 @@ const addon = {
         var url = baseUrl + "portal.php";
         try {
             var hUrl = url + "?type=stb&action=handshake&sn=" + authData.sn + "&JsHttpRequest=1-0";
-            var res = await axios.get(hUrl, { headers: authData.headers, timeout: 5000 });
+            var res = await axios.get(hUrl, { headers: authData.headers, timeout: 7000 });
             var token = res.data?.js?.token || res.data?.token || null;
             if (token) {
-                var fullAuth = getStalkerAuth(config, token);
-                return { token: token, api: url + "?", authData: fullAuth };
+                return { token: token, api: url + "?", authData: getStalkerAuth(config, token) };
             }
         } catch (e) { return null; }
     },
 
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
-        
-        // Categorias padrão que forçam o Stremio a mostrar o menu de Géneros
-        const defaultGenres = ["Todas", "Portugal", "Desporto", "Cinema", "Infantil", "Documentários", "Música"];
-
+        const genres = ["Todas", "Portugal", "Desporto", "Cinema", "Infantil", "Documentarios"];
         const catalogs = lists.map((l, i) => ({
             type: "tv",
             id: "stalker_cat_" + i,
             name: l.name || ("Lista " + (i + 1)),
-            extra: [
-                { name: "genre", options: defaultGenres, isRequired: false },
-                { name: "search", isRequired: false }
-            ]
+            extra: [{ name: "genre", options: genres, isRequired: false }]
         }));
 
         return {
-            id: "org.xulov.stalker.multi.v5",
-            version: "5.0.0",
+            id: "org.xulov.stalker.v6",
+            version: "6.0.0",
             name: "XuloV Stalker Hub",
-            description: "Categorias e Multi-Portal",
             resources: ["catalog", "stream", "meta"],
             types: ["tv"],
             idPrefixes: ["xlv:"],
@@ -83,37 +75,18 @@ const addon = {
         if (!auth) return { metas: [] };
 
         try {
-            const genreSelected = extra.genre || "Todas";
-            let categoryId = null;
-
-            // 1. Tentar obter as categorias REAIS do portal para mapear o nome
-            if (genreSelected !== "Todas") {
-                const catUrl = `${auth.api}type=itv&action=get_genres&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                const catRes = await axios.get(catUrl, { headers: auth.authData.headers });
-                const categories = catRes.data?.js?.data || catRes.data?.js || [];
-                
-                const found = categories.find(c => 
-                    (c.title || c.name || "").toLowerCase().includes(genreSelected.toLowerCase())
-                );
-                if (found) categoryId = found.id;
-            }
-
-            // 2. Buscar Canais
             var url = auth.api + "type=itv&action=get_all_channels&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
             var res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
             var rawData = res.data?.js?.data || res.data?.js || [];
             var channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
 
-            // 3. Filtrar
-            if (categoryId) {
-                channels = channels.filter(ch => (ch.category_id || ch.tv_genre_id || "").toString() === categoryId.toString());
-            } else if (genreSelected !== "Todas") {
-                // Fallback: se não achou ID, filtra por nome do canal
-                channels = channels.filter(ch => ch.name.toLowerCase().includes(genreSelected.toLowerCase()));
+            const genre = extra.genre || "Todas";
+            if (genre !== "Todas") {
+                channels = channels.filter(ch => ch.name.toLowerCase().includes(genre.toLowerCase()));
             }
 
             return {
-                metas: channels.slice(0, 400).map(ch => ({
+                metas: channels.slice(0, 300).map(ch => ({
                     id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name)}`,
                     name: ch.name,
                     type: "tv",
@@ -126,17 +99,15 @@ const addon = {
 
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":");
-        const listIdx = parts[1];
         const channelId = parts[2];
-        const channelName = decodeURIComponent(parts[3] || "Canal");
-
-        // O link de stream agora aponta para o nosso PROXY no server.cjs
+        // Forçamos o uso do Proxy do server para contornar bloqueios de IP e Headers
         const proxyUrl = `https://${host}/proxy/${configBase64}/${channelId}`;
 
         return {
             streams: [{
                 url: proxyUrl,
-                title: "▶️ Reproduzir: " + channelName,
+                name: "XuloV Engine",
+                description: "Sinal Otimizado via Proxy",
                 behaviorHints: { notWeb: true, isLive: true }
             }]
         };
