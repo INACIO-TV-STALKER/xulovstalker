@@ -33,9 +33,8 @@ const addon = {
     async authenticate(config) {
         if (!config || !config.url) return null;
         const cacheKey = config.url + config.mac;
-        if (cache.auth[cacheKey] && (Date.now() - cache.lastFetch[cacheKey] < 3000000)) {
-            return cache.auth[cacheKey];
-        }
+        if (cache.auth[cacheKey] && (Date.now() - cache.lastFetch[cacheKey] < 3000000)) return cache.auth[cacheKey];
+
         const authData = getStalkerAuth(config, null);
         let baseUrl = config.url.trim().replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
         if (!baseUrl.endsWith('/')) baseUrl += '/';
@@ -50,41 +49,49 @@ const addon = {
                 cache.lastFetch[cacheKey] = Date.now();
                 return result;
             }
-        } catch (e) { return null; }
+        } catch (e) { console.error("Erro Auth:", e.message); }
+        return null;
     },
 
-    // 1. O MANIFESTO AGORA TENTA BUSCAR CATEGORIAS REAIS
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
         const catalogs = [];
 
         for (let i = 0; i < lists.length; i++) {
             const config = lists[i];
-            const cacheKey = "cats_" + config.url + config.mac;
+            const cacheKeyCats = "cats_" + config.url + config.mac;
             let genres = ["Todos"];
 
-            // Tenta buscar categorias reais se estiverem em cache (ou usa genéricas na primeira vez)
-            if (cache.categories[cacheKey]) {
-                genres = cache.categories[cacheKey].map(c => c.name);
-            } else {
-                // Categorias temporárias para o Stremio não ficar vazio no primeiro load
-                genres = ["Carregando...", "Portugal", "Sports", "Movies", "Kids"];
+            // FORÇAR LOGIN E BUSCA DE CATEGORIAS LOGO NO MANIFESTO
+            const auth = await this.authenticate(config);
+            if (auth) {
+                try {
+                    const catUrl = `${auth.api}type=itv&action=get_categories&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                    const catRes = await axios.get(catUrl, { headers: auth.authData.headers, timeout: 5000 });
+                    const rawCats = catRes.data?.js || [];
+                    const categories = Array.isArray(rawCats) ? rawCats : Object.values(rawCats);
+                    
+                    if (categories.length > 0) {
+                        cache.categories[cacheKeyCats] = categories;
+                        genres = ["Todos", ...categories.map(c => c.name)];
+                    }
+                } catch (e) { console.error("Erro ao buscar categorias no manifesto"); }
             }
 
             catalogs.push({
                 type: "tv",
                 id: `stalker_cat_${i}`,
                 name: config.name || `Lista ${i + 1}`,
-                extra: [{ name: "genre", isRequired: false, options: genres }]
+                extra: [{ name: "genre", isRequired: false, options: genres.slice(0, 100) }] // Limite de 100 categorias
             });
         }
 
         return {
             id: "org.xulov.stalker.v3",
-            version: "3.5.0",
+            version: "3.5.1",
             name: "XuloV Stalker Hub",
-            description: "Categorias Reais do Servidor",
-            resources: ["catalog", "stream"],
+            description: "Categorias Reais Sincronizadas",
+            resources: ["catalog", "stream", "meta"],
             types: ["tv"],
             idPrefixes: ["xlv:"],
             catalogs: catalogs
@@ -100,20 +107,11 @@ const addon = {
         const auth = await this.authenticate(config);
         if (!auth) return { metas: [] };
 
+        const cacheKeyCats = "cats_" + config.url + config.mac;
+        const cacheKeyChans = "ch_" + config.url + config.mac;
+
         try {
-            const cacheKeyCats = "cats_" + config.url + config.mac;
-            const cacheKeyChans = "ch_" + config.url + config.mac;
-
-            // 1. BUSCAR AS CATEGORIAS REAIS DO PORTAL
-            if (!cache.categories[cacheKeyCats]) {
-                const catUrl = `${auth.api}type=itv&action=get_categories&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                const catRes = await axios.get(catUrl, { headers: auth.authData.headers });
-                const rawCats = catRes.data?.js || [];
-                cache.categories[cacheKeyCats] = Array.isArray(rawCats) ? rawCats : Object.values(rawCats);
-                console.log(`✅ Categorias reais carregadas para lista ${listIdx}`);
-            }
-
-            // 2. BUSCAR OS CANAIS
+            // Garantir que temos canais em cache
             if (!cache.channels[cacheKeyChans]) {
                 const url = `${auth.api}type=itv&action=get_all_channels&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                 const res = await axios.get(url, { headers: auth.authData.headers, timeout: 15000 });
@@ -123,33 +121,30 @@ const addon = {
 
             let filteredChannels = cache.channels[cacheKeyChans];
 
-            // 3. FILTRAR PELA CATEGORIA REAL SELECIONADA
-            if (extra && extra.genre && extra.genre !== "Todos" && extra.genre !== "Carregando...") {
-                const selectedGenre = extra.genre.toLowerCase();
-                const category = cache.categories[cacheKeyCats].find(c => 
-                    c.name.toLowerCase().trim() === selectedGenre.trim()
-                );
-                
+            // Lógica de filtragem robusta
+            if (extra && extra.genre && extra.genre !== "Todos") {
+                const cats = cache.categories[cacheKeyCats] || [];
+                const category = cats.find(c => c.name === extra.genre);
                 if (category) {
-                    filteredChannels = filteredChannels.filter(ch => ch.category_id === category.id || ch.tv_genre_id === category.id);
+                    filteredChannels = filteredChannels.filter(ch => 
+                        String(ch.category_id) === String(category.id) || 
+                        String(ch.tv_genre_id) === String(category.id)
+                    );
                 }
             } else {
-                // Se não houver filtro, mostra os primeiros 300
-                filteredChannels = filteredChannels.slice(0, 300);
+                filteredChannels = filteredChannels.slice(0, 200);
             }
 
-            const metas = filteredChannels.map(ch => ({
-                id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name || "Canal")}`,
-                name: ch.name || "Canal",
-                type: "tv",
-                poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "https://telegra.ph/file/a85d95e09f6e3c0919313.png",
-                posterShape: "square"
-            }));
-
-            return { metas };
-        } catch (e) {
-            return { metas: [] };
-        }
+            return {
+                metas: filteredChannels.map(ch => ({
+                    id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name || "Canal")}`,
+                    name: ch.name || "Canal",
+                    type: "tv",
+                    poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "https://telegra.ph/file/a85d95e09f6e3c0919313.png",
+                    posterShape: "square"
+                }))
+            };
+        } catch (e) { return { metas: [] }; }
     },
 
     async getStreams(type, id, configBase64) {
@@ -168,12 +163,10 @@ const addon = {
             const sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
             const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
             let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || "";
-            
             if (streamUrl) {
-                const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|rtmp)\s+/, "").trim();
                 return {
                     streams: [{
-                        url: finalUrl,
+                        url: streamUrl.replace(/^(ffrt|ffmpeg|rtmp)\s+/, "").trim(),
                         name: "XuloV Stalker",
                         title: channelName,
                         behaviorHints: { notWeb: true, isLive: true }
