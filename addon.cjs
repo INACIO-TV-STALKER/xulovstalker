@@ -1,7 +1,7 @@
 const axios = require("axios");
 const crypto = require("crypto");
 
-const cache = { auth: {}, channels: {}, categories: {}, lastFetch: {} };
+const cache = { auth: {}, channels: {}, lastFetch: {} };
 
 const getStalkerAuth = function(config, token) {
     const mac = (config.mac || "").toUpperCase().trim();
@@ -41,7 +41,7 @@ const addon = {
         const url = baseUrl + "portal.php";
         try {
             const hUrl = `${url}?type=stb&action=handshake&sn=${authData.sn}&JsHttpRequest=1-0`;
-            const res = await axios.get(hUrl, { headers: authData.headers, timeout: 8000 });
+            const res = await axios.get(hUrl, { headers: authData.headers, timeout: 5000 });
             const token = res.data?.js?.token || res.data?.token;
             if (token) {
                 const result = { token, api: url + "?", authData: getStalkerAuth(config, token) };
@@ -55,46 +55,23 @@ const addon = {
 
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
-        const catalogs = [];
-
-        for (let i = 0; i < lists.length; i++) {
-            const config = lists[i];
-            const cacheKeyCats = "cats_" + config.url + config.mac;
-            let genres = ["Todos"];
-
-            // FORÇAR LOGIN E BUSCA DE CATEGORIAS LOGO NO MANIFESTO
-            const auth = await this.authenticate(config);
-            if (auth) {
-                try {
-                    const catUrl = `${auth.api}type=itv&action=get_categories&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                    const catRes = await axios.get(catUrl, { headers: auth.authData.headers, timeout: 5000 });
-                    const rawCats = catRes.data?.js || [];
-                    const categories = Array.isArray(rawCats) ? rawCats : Object.values(rawCats);
-                    
-                    if (categories.length > 0) {
-                        cache.categories[cacheKeyCats] = categories;
-                        genres = ["Todos", ...categories.map(c => c.name)];
-                    }
-                } catch (e) { console.error("Erro ao buscar categorias no manifesto"); }
-            }
-
-            catalogs.push({
-                type: "tv",
-                id: `stalker_cat_${i}`,
-                name: config.name || `Lista ${i + 1}`,
-                extra: [{ name: "genre", isRequired: false, options: genres.slice(0, 100) }] // Limite de 100 categorias
-            });
-        }
-
+        // Usamos categorias universais para o manifesto carregar INSTANTANEAMENTE
+        const commonGenres = ["Todos", "Portugal", "Sports", "Movies", "Kids", "Documentary", "Music", "News", "Brazil", "UK", "Germany", "France"];
+        
         return {
             id: "org.xulov.stalker.v3",
-            version: "3.5.1",
+            version: "3.6.0",
             name: "XuloV Stalker Hub",
-            description: "Categorias Reais Sincronizadas",
-            resources: ["catalog", "stream", "meta"],
+            description: "IPTV Estável para Samsung",
+            resources: ["catalog", "stream"],
             types: ["tv"],
             idPrefixes: ["xlv:"],
-            catalogs: catalogs
+            catalogs: lists.map((l, i) => ({ 
+                type: "tv", 
+                id: `stalker_cat_${i}`, 
+                name: l.name || `Lista ${i+1}`,
+                extra: [{ name: "genre", isRequired: false, options: commonGenres }]
+            }))
         };
     },
 
@@ -107,36 +84,54 @@ const addon = {
         const auth = await this.authenticate(config);
         if (!auth) return { metas: [] };
 
-        const cacheKeyCats = "cats_" + config.url + config.mac;
         const cacheKeyChans = "ch_" + config.url + config.mac;
+        const cacheKeyCats = "cats_" + config.url + config.mac;
 
         try {
-            // Garantir que temos canais em cache
+            // 1. Buscar canais se não estiverem em cache
             if (!cache.channels[cacheKeyChans]) {
                 const url = `${auth.api}type=itv&action=get_all_channels&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                 const res = await axios.get(url, { headers: auth.authData.headers, timeout: 15000 });
                 const rawData = res.data?.js?.data || res.data?.js || [];
                 cache.channels[cacheKeyChans] = Array.isArray(rawData) ? rawData : Object.values(rawData);
+                
+                // Aproveitamos para tentar buscar as categorias reais em background para a próxima filtragem
+                const catUrl = `${auth.api}type=itv&action=get_categories&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                axios.get(catUrl, { headers: auth.authData.headers }).then(catRes => {
+                    const cData = catRes.data?.js || [];
+                    cache.categories[cacheKeyCats] = Array.isArray(cData) ? cData : Object.values(cData);
+                }).catch(() => {});
             }
 
-            let filteredChannels = cache.channels[cacheKeyChans];
+            let channels = cache.channels[cacheKeyChans];
 
-            // Lógica de filtragem robusta
+            // 2. FILTRAGEM INTELIGENTE
             if (extra && extra.genre && extra.genre !== "Todos") {
+                const search = extra.genre.toLowerCase();
                 const cats = cache.categories[cacheKeyCats] || [];
-                const category = cats.find(c => c.name === extra.genre);
-                if (category) {
-                    filteredChannels = filteredChannels.filter(ch => 
-                        String(ch.category_id) === String(category.id) || 
-                        String(ch.tv_genre_id) === String(category.id)
+                
+                // Tenta encontrar a categoria pelo nome que o utilizador clicou
+                const foundCat = cats.find(c => c.name.toLowerCase().includes(search));
+                
+                if (foundCat) {
+                    // Se encontrou a categoria no portal, filtra por ID
+                    channels = channels.filter(ch => 
+                        String(ch.category_id) === String(foundCat.id) || 
+                        String(ch.tv_genre_id) === String(foundCat.id)
                     );
+                } else {
+                    // Se não encontrou a categoria pelo ID, tenta filtrar pelo NOME do canal (ex: cliquei em "Sports", procuro canais que tenham "Sport" no nome)
+                    channels = channels.filter(ch => ch.name.toLowerCase().includes(search));
                 }
-            } else {
-                filteredChannels = filteredChannels.slice(0, 200);
+            }
+
+            // Se depois de filtrar não sobrar nada, ou se for "Todos", mostra os primeiros 200
+            if (channels.length === 0 || !extra.genre || extra.genre === "Todos") {
+                channels = cache.channels[cacheKeyChans].slice(0, 300);
             }
 
             return {
-                metas: filteredChannels.map(ch => ({
+                metas: channels.map(ch => ({
                     id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name || "Canal")}`,
                     name: ch.name || "Canal",
                     type: "tv",
@@ -144,7 +139,10 @@ const addon = {
                     posterShape: "square"
                 }))
             };
-        } catch (e) { return { metas: [] }; }
+        } catch (e) {
+            console.error("Erro no Catalog:", e.message);
+            return { metas: [] };
+        }
     },
 
     async getStreams(type, id, configBase64) {
@@ -152,7 +150,6 @@ const addon = {
         const listIdx = parseInt(parts[1]);
         const channelId = parts[2];
         const channelName = parts.length >= 4 ? decodeURIComponent(parts[3]) : "Canal IPTV";
-        
         const lists = this.parseConfig(configBase64);
         const config = lists[listIdx];
         const auth = await this.authenticate(config);
