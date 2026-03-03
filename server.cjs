@@ -137,8 +137,9 @@ app.get("/:config/meta/:type/:id.json", (req, res) => {
 });
 
 app.get("/:config/stream/:type/:id.json", async (req, res) => {
-    const host = req.headers.host;
-    res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
+    const host = req.headers.host; // Pega o endereço do teu Render automaticamente
+    const streams = await addon.getStreams(req.params.type, req.params.id, req.params.config, host);
+    res.json(streams);
 });
 
 // O SEGREDO PARA A TIZEN TV (Faz o pipe do vídeo com cabeçalhos corretos)
