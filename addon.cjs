@@ -107,22 +107,61 @@ const addon = {
             };
         } catch (e) { return { metas: [] }; }
     },
-
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":");
+        const listIdx = parseInt(parts[1]);
         const channelId = parts[2];
-        // Forçamos o uso do Proxy do server para contornar bloqueios de IP e Headers
-        const proxyUrl = `https://${host}/proxy/${configBase64}/${channelId}`;
 
-        return {
-            streams: [{
-                url: proxyUrl,
-                name: "XuloV Engine",
-                description: "Sinal Otimizado via Proxy",
-                behaviorHints: { notWeb: true, isLive: true }
-            }]
-        };
+        const lists = this.parseConfig(configBase64);
+        const config = lists[listIdx];
+        if (!config) return { streams: [] };
+
+        // 1. Autenticar para obter o token atualizado e os headers
+        const auth = await this.authenticate(config);
+        if (!auth) return { streams: [] };
+
+        try {
+            // 2. Pedir ao portal o link real de reprodução (create_link)
+            const cmd = `ffrt ${channelId}`;
+            const linkUrl = `${auth.api}type=itv&action=create_link&forced_storage=0&download=0&cmd=${encodeURIComponent(cmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+            
+            const res = await axiosGetWithAgent(linkUrl, { 
+                headers: auth.authData.headers, 
+                timeout: 10000 
+            });
+
+            let finalUrl = res.data?.js?.data || res.data?.js || res.data?.result;
+
+            if (typeof finalUrl === 'string' && finalUrl.length > 0) {
+                // Remover prefixos comuns que o Stalker envia (ex: "ffrt ", "ffmpeg ")
+                finalUrl = finalUrl.replace(/^(ffrt|ffmpeg|rtmp)\s+/, "").trim();
+
+                return {
+                    streams: [{
+                        url: finalUrl,
+                        name: "XuloV Direct",
+                        description: "Sinal Direto Otimizado",
+                        behaviorHints: {
+                            notWeb: true, // Força a app a abrir o player nativo
+                            isLive: true,
+                            // 3. PASSAR OS HEADERS: Essencial para o portal não bloquear o vídeo
+                            proxyHeaders: {
+                                "common": {
+                                    "User-Agent": auth.authData.headers["User-Agent"],
+                                    "Cookie": auth.authData.headers["Cookie"]
+                                }
+                            }
+                        }
+                    }]
+                };
+            }
+        } catch (e) {
+            console.error("Erro ao obter stream:", e.message);
+        }
+        
+        return { streams: [] };
     }
+
 };
 
 module.exports = addon;
