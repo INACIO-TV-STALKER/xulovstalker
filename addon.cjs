@@ -10,55 +10,86 @@ const getStalkerAuth = function(config, token) {
     var sn = config.sn || crypto.createHash('md5').update(seed + "sn").digest('hex').substring(0, 13).toUpperCase();
     var cookie = "mac=" + encodeURIComponent(mac) + "; stb_lang=en; timezone=Europe/Lisbon;";
     if (token) cookie += " access_token=" + token + ";";
+
     return {
-        sn: sn, id1: id1, id2: id2, sig: sig,
+        sn: sn,
+        id1: id1,
+        id2: id2,
+        sig: sig,
         headers: {
             "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3",
-            "X-User-Agent": "Model: " + (config.model || 'MAG254') + "; SW: 2.18-r14-254; Device ID: " + id1 + "; Device ID2: " + id2 + "; Signature: " + sig + ";",
-            "Cookie": cookie, "Accept": "*/*", "Referer": config.url.replace(/\/$/, "") + "/c/"
+            "X-User-Agent": "Model: " + (config.model || 'MAG254') +
+                "; SW: 2.18-r14-254; Device ID: " + id1 +
+                "; Device ID2: " + id2 +
+                "; Signature: " + sig + ";",
+            "Cookie": cookie,
+            "Accept": "*/*",
+            "Referer": config.url.replace(/\/$/, "") + "/c/"
         }
     };
 };
 
 const addon = {
+
     parseConfig(configBase64) {
         try {
             const data = JSON.parse(Buffer.from(configBase64, 'base64').toString());
-            // Compatibilidade: se for lista única, transforma em array
             return data.lists ? data.lists : [data];
         } catch (e) { return []; }
     },
 
     async authenticate(config) {
         if (!config || !config.url) return null;
+
         var authData = getStalkerAuth(config, null);
-        var baseUrl = config.url.trim().replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
+        var baseUrl = config.url.trim()
+            .replace(/\/c\/?$/, "")
+            .replace(/\/portal\.php\/?$/, "");
+
         if (!baseUrl.endsWith('/')) baseUrl += '/';
         var url = baseUrl + "portal.php";
+
         try {
-            var hUrl = url + "?type=stb&action=handshake&sn=" + authData.sn + "&device_id=" + authData.id1 + "&JsHttpRequest=1-0";
-            var res = await axios.get(hUrl, { headers: authData.headers, timeout: 5000 });
+            var hUrl = url + "?type=stb&action=handshake&sn=" +
+                authData.sn +
+                "&device_id=" + authData.id1 +
+                "&JsHttpRequest=1-0";
+
+            var res = await axios.get(hUrl, {
+                headers: authData.headers,
+                timeout: 5000
+            });
+
             var token = res.data?.js?.token || res.data?.token || null;
+
             if (token) {
                 var fullAuth = getStalkerAuth(config, token);
-                return { token: token, api: url + "?", authData: fullAuth };
+                return {
+                    token: token,
+                    api: url + "?",
+                    authData: fullAuth
+                };
             }
-        } catch (e) { return null; }
+        } catch (e) { }
+
+        return null;
     },
 
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
+
         const catalogs = lists.map((l, i) => ({
             type: "tv",
             id: "stalker_cat_" + i,
-            name: l.name || ("Lista " + (i + 1))
+            name: l.name || ("Lista " + (i + 1)),
+            extra: [{ name: "genre", isRequired: false }]
         }));
 
         return {
             id: "org.xulov.stalker.multi",
-            version: "3.0.0",
+            version: "4.0.0",
             name: "XuloV Stalker Hub",
-            description: "Suporte para até 5 Portais Stalker",
+            description: "Suporte Multi Portal Stalker com Géneros Reais",
             resources: ["catalog", "stream", "meta"],
             types: ["tv"],
             idPrefixes: ["xlv:"],
@@ -67,55 +98,127 @@ const addon = {
     },
 
     async getCatalog(type, id, extra, configBase64) {
+
         const lists = this.parseConfig(configBase64);
         const listIdx = parseInt(id.replace("stalker_cat_", ""));
         const config = lists[listIdx];
+
         if (!config) return { metas: [] };
 
         const auth = await this.authenticate(config);
         if (!auth) return { metas: [] };
 
+        let genresMap = {};
+
         try {
-            var url = auth.api + "type=itv&action=get_all_channels&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
-            var res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
+            const gUrl = auth.api +
+                "type=itv&action=get_genres&sn=" +
+                auth.authData.sn +
+                "&JsHttpRequest=1-0";
+
+            const gRes = await axios.get(gUrl, {
+                headers: auth.authData.headers,
+                timeout: 10000
+            });
+
+            const gData = gRes.data?.js || [];
+
+            gData.forEach(g => {
+                genresMap[String(g.id)] = g.title;
+            });
+
+        } catch (e) { }
+
+        try {
+            var url = auth.api +
+                "type=itv&action=get_all_channels&sn=" +
+                auth.authData.sn +
+                "&token=" + auth.token +
+                "&JsHttpRequest=1-0";
+
+            var res = await axios.get(url, {
+                headers: auth.authData.headers,
+                timeout: 15000
+            });
+
             var rawData = res.data?.js?.data || res.data?.js || [];
-            var channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
+            var channels = Array.isArray(rawData)
+                ? rawData
+                : Object.values(rawData);
+
+            if (extra?.genre) {
+                channels = channels.filter(ch =>
+                    genresMap[String(ch.tv_genre_id)] === extra.genre
+                );
+            }
 
             return {
                 metas: channels.map(ch => ({
                     id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name)}`,
                     name: ch.name,
                     type: "tv",
-                    poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "",
+                    genre: genresMap[String(ch.tv_genre_id)]
+                        ? [genresMap[String(ch.tv_genre_id)]]
+                        : [],
+                    poster: ch.logo
+                        ? (ch.logo.startsWith('http')
+                            ? ch.logo
+                            : config.url.replace(/\/$/, "") + "/c/" + ch.logo)
+                        : "",
                     posterShape: "square"
                 }))
             };
-        } catch (e) { return { metas: [] }; }
+
+        } catch (e) {
+            return { metas: [] };
+        }
     },
 
     async getStreams(type, id, configBase64) {
+
         const parts = id.split(":");
         const listIdx = parseInt(parts[1]);
         const channelId = parts[2];
         const channelName = decodeURIComponent(parts[3] || "Canal");
-        
+
         const lists = this.parseConfig(configBase64);
         const config = lists[listIdx];
+
         const auth = await this.authenticate(config);
         if (!auth) return { streams: [] };
 
         try {
-            const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
+
+            const cmd = encodeURIComponent(
+                `ffrt http://localhost/ch/${channelId}`
+            );
+
             const sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
-            const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
-            let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || "";
+
+            const linkRes = await axios.get(sUrl, {
+                headers: auth.authData.headers
+            });
+
+            let streamUrl =
+                linkRes.data?.js?.cmd ||
+                linkRes.data?.js ||
+                "";
+
             if (streamUrl) {
-                return { streams: [{ url: streamUrl.replace(/^(ffrt|ffmpeg|rtmp)\s+/, "").trim(), title: "▶️ " + channelName }] };
+                return {
+                    streams: [{
+                        url: streamUrl
+                            .replace(/^(ffrt|ffmpeg|rtmp)\s+/, "")
+                            .trim(),
+                        title: "▶️ " + channelName
+                    }]
+                };
             }
-        } catch (e) {}
+
+        } catch (e) { }
+
         return { streams: [] };
     }
 };
 
 module.exports = addon;
-
