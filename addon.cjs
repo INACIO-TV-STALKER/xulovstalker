@@ -1,7 +1,7 @@
 const axios = require("axios");
 const crypto = require("crypto");
 
-const cache = { auth: {}, channels: {}, lastFetch: {} };
+const cache = { auth: {}, channels: {}, categories: {}, lastFetch: {} };
 
 const getStalkerAuth = function(config, token) {
     const mac = (config.mac || "").toUpperCase().trim();
@@ -27,61 +27,51 @@ const addon = {
             const decoded = Buffer.from(configBase64, 'base64').toString();
             const data = JSON.parse(decoded);
             return data.lists || (data.url ? [data] : []);
-        } catch (e) { 
-            console.error("❌ Erro ao ler configuração Base64");
-            return []; 
-        }
+        } catch (e) { return []; }
     },
 
     async authenticate(config) {
         if (!config || !config.url) return null;
         const cacheKey = config.url + config.mac;
-
         if (cache.auth[cacheKey] && (Date.now() - cache.lastFetch[cacheKey] < 3000000)) {
             return cache.auth[cacheKey];
         }
-
         const authData = getStalkerAuth(config, null);
         let baseUrl = config.url.trim().replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
         if (!baseUrl.endsWith('/')) baseUrl += '/';
         const url = baseUrl + "portal.php";
-
         try {
-            console.log(`[Auth] A tentar login em: ${baseUrl} com MAC: ${config.mac}`);
             const hUrl = `${url}?type=stb&action=handshake&sn=${authData.sn}&JsHttpRequest=1-0`;
             const res = await axios.get(hUrl, { headers: authData.headers, timeout: 8000 });
             const token = res.data?.js?.token || res.data?.token;
-
             if (token) {
-                console.log(`✅ Login com Sucesso! Token: ${token.substring(0,5)}...`);
                 const result = { token, api: url + "?", authData: getStalkerAuth(config, token) };
                 cache.auth[cacheKey] = result;
                 cache.lastFetch[cacheKey] = Date.now();
                 return result;
-            } else {
-                console.error("❌ Portal recusou o aperto de mão (Handshake). MAC ou URL podem estar errados.");
             }
-        } catch (e) {
-            console.error(`❌ Erro de Rede na Auth: ${e.message}`);
-        }
+        } catch (e) { console.error("Erro Auth:", e.message); }
         return null;
     },
 
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
-        console.log(`[Manifest] Carregadas ${lists.length} listas.`);
+        // Categorias padrão que quase todos os portais têm
+        const commonGenres = ["Portugal", "Sports", "Movies", "Kids", "Documentary", "Music", "News", "UK", "France", "Brazil"];
+        
         return {
             id: "org.xulov.stalker.v3",
-            version: "3.3.0",
+            version: "3.4.0",
             name: "XuloV Stalker Hub",
-            description: "IPTV Multi-Lista Estável",
+            description: "Organizado por Categorias",
             resources: ["catalog", "stream", "meta"],
             types: ["tv"],
             idPrefixes: ["xlv:"],
             catalogs: lists.map((l, i) => ({ 
                 type: "tv", 
                 id: `stalker_cat_${i}`, 
-                name: l.name || `Lista ${i+1}` 
+                name: l.name || `Lista ${i+1}`,
+                extra: [{ name: "genre", isRequired: false, options: commonGenres }]
             }))
         };
     },
@@ -92,22 +82,47 @@ const addon = {
         const config = lists[listIdx];
         if (!config) return { metas: [] };
 
-        const cacheKey = "ch_" + config.url + config.mac;
-        if (cache.channels[cacheKey]) return { metas: cache.channels[cacheKey] };
-
         const auth = await this.authenticate(config);
         if (!auth) return { metas: [] };
 
         try {
-            console.log(`[Catalog] A carregar canais da lista ${listIdx}...`);
-            const url = `${auth.api}type=itv&action=get_all_channels&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-            const res = await axios.get(url, { headers: auth.authData.headers, timeout: 15000 });
-            const rawData = res.data?.js?.data || res.data?.js || [];
-            const channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
+            const cacheKeyCats = "cats_" + config.url + config.mac;
+            const cacheKeyChans = "ch_" + config.url + config.mac;
 
-            console.log(`✅ Foram encontrados ${channels.length} canais.`);
+            // 1. Obter Categorias do Portal (se não estiverem em cache)
+            if (!cache.categories[cacheKeyCats]) {
+                const catUrl = `${auth.api}type=itv&action=get_categories&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                const catRes = await axios.get(catUrl, { headers: auth.authData.headers });
+                cache.categories[cacheKeyCats] = catRes.data?.js || [];
+            }
 
-            const metas = channels.map(ch => ({
+            // 2. Obter Canais (se não estiverem em cache)
+            if (!cache.channels[cacheKeyChans]) {
+                const url = `${auth.api}type=itv&action=get_all_channels&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                const res = await axios.get(url, { headers: auth.authData.headers, timeout: 15000 });
+                const rawData = res.data?.js?.data || res.data?.js || [];
+                cache.channels[cacheKeyChans] = Array.isArray(rawData) ? rawData : Object.values(rawData);
+            }
+
+            let filteredChannels = cache.channels[cacheKeyChans];
+
+            // 3. Lógica de Filtragem por Categoria (Genre)
+            if (extra && extra.genre) {
+                const selectedGenre = extra.genre.toLowerCase();
+                // Encontrar o ID da categoria que corresponde ao nome escolhido
+                const category = cache.categories[cacheKeyCats].find(c => 
+                    c.name.toLowerCase().includes(selectedGenre)
+                );
+                
+                if (category) {
+                    filteredChannels = filteredChannels.filter(ch => ch.category_id === category.id);
+                }
+            } else {
+                // Se não houver categoria selecionada, mostra os primeiros 300 para ser rápido
+                filteredChannels = filteredChannels.slice(0, 300);
+            }
+
+            const metas = filteredChannels.map(ch => ({
                 id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name || "Canal")}`,
                 name: ch.name || "Canal",
                 type: "tv",
@@ -115,31 +130,28 @@ const addon = {
                 posterShape: "square"
             }));
 
-            if (metas.length > 0) cache.channels[cacheKey] = metas;
             return { metas };
         } catch (e) {
-            console.error(`❌ Erro ao obter catálogo: ${e.message}`);
+            console.error("Erro no Catálogo:", e.message);
             return { metas: [] };
         }
     },
 
     async getStreams(type, id, configBase64) {
+        // ... (Mantém a função getStreams igual à anterior, ela está perfeita!)
         const parts = id.split(":");
         const listIdx = parseInt(parts[1]);
         const channelId = parts[2];
         const channelName = parts.length >= 4 ? decodeURIComponent(parts[3]) : "Canal IPTV";
-        
         const lists = this.parseConfig(configBase64);
         const config = lists[listIdx];
         const auth = await this.authenticate(config);
         if (!auth) return { streams: [] };
-
         try {
             const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
             const sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
             const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
             let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || "";
-            
             if (streamUrl) {
                 const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|rtmp)\s+/, "").trim();
                 return {
