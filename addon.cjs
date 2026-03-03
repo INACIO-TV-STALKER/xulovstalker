@@ -14,7 +14,7 @@ const getStalkerAuth = (config, token) => {
     const id1 = config.id1 || crypto.createHash('md5').update(mac + "id1").digest('hex').toUpperCase();
     const sn = config.sn || mac.replace(/:/g, "").substring(0, 13);
     const cookie = `mac=${encodeURIComponent(mac)}; stb_lang=en; timezone=Europe/Lisbon;${token ? " access_token=" + token + ";" : ""}`;
-    
+
     return {
         sn, id1,
         headers: {
@@ -42,15 +42,11 @@ const addon = {
         } catch (e) { return null; }
     },
 
-    // ESTA FUNÇÃO É A QUE GARANTE AS CATEGORIAS NO STREMIO
     getManifest: function() {
         const lists = this.loadLists();
         const catalogs = lists.map(l => {
-            // Extrai os nomes das categorias guardadas no lists.json
             let genreOptions = (l.cachedCategories || []).map(c => c.title);
-            
-            // Se estiver vazio, põe opções básicas para não aparecer vazio na TV
-            if (genreOptions.length === 0) genreOptions = ["Todas", "Portugal", "Sports", "Movies"];
+            if (genreOptions.length === 0) genreOptions = ["Todas"];
             if (!genreOptions.includes("Todas")) genreOptions.unshift("Todas");
 
             return {
@@ -66,7 +62,7 @@ const addon = {
 
         return {
             id: "org.xulov.stalker.pro.v24",
-            version: "3.7.0",
+            version: "3.7.1",
             name: "XuloV Stalker Pro",
             description: "Categorias Reais Sincronizadas",
             resources: ["catalog", "stream"],
@@ -88,7 +84,6 @@ const addon = {
             const genreSelected = (extra && extra.genre) ? extra.genre : "Todas";
             let categoryId = "0";
 
-            // Encontra o ID do portal que corresponde ao nome selecionado no Stremio
             if (genreSelected !== "Todas" && config.cachedCategories) {
                 const found = config.cachedCategories.find(c => c.title === genreSelected);
                 if (found) categoryId = found.id;
@@ -99,11 +94,10 @@ const addon = {
             const raw = res.data?.js?.data || res.data?.js || [];
             let channels = Array.isArray(raw) ? raw : Object.values(raw);
 
-            // Filtragem por Categoria
             if (categoryId !== "0") {
                 channels = channels.filter(ch => (ch.category_id || ch.tv_genre_id || "").toString() === categoryId.toString());
             } else {
-                channels = channels.slice(0, 250); // Mostra os primeiros 250 se for "Todas"
+                channels = channels.slice(0, 250);
             }
 
             return {
@@ -116,8 +110,48 @@ const addon = {
                 }))
             };
         } catch (e) { return { metas: [] }; }
+    }, // <-- ADICIONEI ESTA VÍRGULA
+
+    async getStreams(type, id) { // <-- AGORA ESTÁ DENTRO DO OBJETO ADDON
+        const parts = id.split(":");
+        if (parts.length < 3) return { streams: [] };
+
+        const listId = parts[1];
+        const channelId = parts[2];
+        const channelName = parts.length >= 4 ? decodeURIComponent(parts[3]) : "Canal";
+
+        const config = this.loadLists().find(l => l.id === listId);
+        if (!config) return { streams: [] };
+
+        const auth = await this.authenticate(config);
+        if (!auth) return { streams: [] };
+
+        try {
+            const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
+            const sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+            
+            const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 10000 });
+            let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || "";
+
+            if (streamUrl) {
+                const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|rtmp)\s+/, "").trim();
+                return {
+                    streams: [{
+                        url: finalUrl,
+                        name: "XuloV Engine",
+                        title: `${channelName}`,
+                        behaviorHints: {
+                            notWeb: true,
+                            isLive: true,
+                            proxyHeaders: { "User-Agent": auth.authData.headers["User-Agent"] }
+                        }
+                    }]
+                };
+            }
+        } catch (e) { console.error(`[ERRO STREAM]: ${e.message}`); }
+        return { streams: [] };
     }
-};
+}; // <-- OBJETO FECHA AQUI
 
 module.exports = addon;
 
