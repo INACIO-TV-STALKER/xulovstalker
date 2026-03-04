@@ -126,8 +126,7 @@ const addon = {
             };
         } catch (e) { return { metas: [] }; }
     },
-
-    async getStreams(type, id, configBase64) {
+async getStreams(type, id, configBase64) {
         const parts = id.split(":");
         const listIdx = parseInt(parts[1]);
         const channelId = parts[2];
@@ -139,15 +138,58 @@ const addon = {
         if (!auth) return { streams: [] };
 
         try {
-            const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
+            // Alteração chave aqui: formato mais compatível com portais atuais
+            const cmdRaw = `ffmpeg http://localhost/ch/${channelId}_`;
+            const cmd = encodeURIComponent(cmdRaw);
+
             const sUrl = `\( {auth.api}type=itv&action=create_link&cmd= \){cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
-            const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
-            let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || "";
+
+            const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 8000 });
+
+            let jsData = linkRes.data?.js || {};
+            let streamUrl = jsData.cmd || "";
+
+            // Limpeza comum e remoção de prefixos que o Stremio não gosta
             if (streamUrl) {
-                return { streams: [{ url: streamUrl.replace(/^(ffrt|ffmpeg|rtmp)\s+/, "").trim(), title: "▶️ " + channelName }] };
+                streamUrl = streamUrl
+                    .replace(/^ffmpeg\s+/, '')     // remove ffmpeg no início
+                    .replace(/^ffrt\s+/, '')       // remove ffrt se aparecer
+                    .replace(/^rtmp\s+/, '')       // por segurança
+                    .trim();
+
+                // Se for http/https, adiciona user-agent se necessário (muitos precisam)
+                if (streamUrl.startsWith('http')) {
+                    return { 
+                        streams: [{ 
+                            url: streamUrl,
+                            title: "▶️ " + channelName,
+                            behaviorHints: { 
+                                notWebReady: true,          // força player externo se for preciso
+                                proxyHeaders: {             // ajuda em alguns casos
+                                    request: { "User-Agent": "Lavf/58.29.100" }
+                                }
+                            }
+                        }] 
+                    };
+                }
             }
-        } catch (e) {}
-        return { streams: [] };
+
+            // Se ainda não tiver, tenta fallback com o cmd sem ffmpeg
+            if (!streamUrl) {
+                const fallbackCmd = encodeURIComponent(`http://localhost/ch/${channelId}`);
+                const fallbackUrl = `\( {auth.api}type=itv&action=create_link&cmd= \){fallbackCmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+                const fbRes = await axios.get(fallbackUrl, { headers: auth.authData.headers });
+                streamUrl = fbRes.data?.js?.cmd || "";
+                if (streamUrl) {
+                    streamUrl = streamUrl.replace(/^ffmpeg\s+/, '').trim();
+                }
+            }
+
+        } catch (e) {
+            console.error("Erro ao criar link:", e.message); // para debug (podes ver no terminal)
+        }
+
+        return { streams: streamUrl ? [{ url: streamUrl, title: "▶️ " + channelName }] : [] };
     }
 };
 
