@@ -49,11 +49,12 @@ const addon = {
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
         const catalogs = lists.map((l, i) => ({
-            type: "tv",
-            id: "stalker_cat_" + i,
-            name: l.name || ("Lista " + (i + 1))
+              type: "tv",
+              id: "stalker_cat_" + i,
+              name: l.name || ("Lista " + (i + 1)),
+              extra: [{ name: "genre", isRequired: false }],
+              genres: []
         }));
-
         return {
             id: "org.xulov.stalker.multi",
             version: "3.0.0",
@@ -80,19 +81,29 @@ const addon = {
             var res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
             var rawData = res.data?.js?.data || res.data?.js || [];
             var channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
+         const categories = [...new Set( 
+ channels
+        .map(ch => ch.tv_genre || ch.category || ch.genre)
+        .filter(Boolean)
+)];
 
-            return {
-                metas: channels.map(ch => ({
-                    id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name)}`,
-                    name: ch.name,
-                    type: "tv",
-                    poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "",
-                    posterShape: "square"
-                }))
-            };
-        } catch (e) { return { metas: [] }; }
-    },
+let filtered = channels;
+if (extra && extra.genre) {
+    filtered = channels.filter(ch =>
+        (ch.tv_genre || ch.category || ch.genre) === extra.genre
+    );
+}
 
+return {
+    metas: filtered.map(ch => ({
+        id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name)}`,
+        name: ch.name,
+        type: "tv",
+        poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "",
+        posterShape: "square"
+    })),
+    genres: categories
+};
     async getStreams(type, id, configBase64) {
         const parts = id.split(":");
         const listIdx = parseInt(parts[1]);
