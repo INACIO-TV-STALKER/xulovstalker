@@ -97,7 +97,7 @@ const addon = {
             var rawData = res.data?.js?.data || res.data?.js || [];
             var channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
 
-            // === FILTRO POR GÉNERO REAL ===
+            // FILTRO POR GÉNERO REAL
             let filteredChannels = channels;
             if (extra && extra.genre && extra.genre !== "Predefinido") {
                 try {
@@ -114,7 +114,6 @@ const addon = {
                     }
                 } catch (e) {}
             }
-            // === FIM DO FILTRO ===
 
             return {
                 metas: filteredChannels.map(ch => ({
