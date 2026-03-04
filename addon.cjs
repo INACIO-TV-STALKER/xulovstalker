@@ -66,44 +66,55 @@ const addon = {
             catalogs: catalogs
         };
     },
+async getCatalog(type, id, extra, configBase64) {
+    const lists = this.parseConfig(configBase64);
+    const listIdx = parseInt(id.replace("stalker_cat_", ""));
+    const config = lists[listIdx];
+    if (!config) return { metas: [] };
 
-    async getCatalog(type, id, extra, configBase64) {
-        const lists = this.parseConfig(configBase64);
-        const listIdx = parseInt(id.replace("stalker_cat_", ""));
-        const config = lists[listIdx];
-        if (!config) return { metas: [] };
+    const auth = await this.authenticate(config);
+    if (!auth) return { metas: [] };
 
-        const auth = await this.authenticate(config);
-        if (!auth) return { metas: [] };
+    try {
+        var url = auth.api + "type=itv&action=get_all_channels&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
+        var res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
+        var rawData = res.data?.js?.data || res.data?.js || [];
+        var channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
 
-        try {
-            var url = auth.api + "type=itv&action=get_all_channels&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
-            var res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
-            var rawData = res.data?.js?.data || res.data?.js || [];
-            var channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
-         const categories = [...new Set( 
- channels
-        .map(ch => ch.tv_genre || ch.category || ch.genre)
-        .filter(Boolean)
-)];
+        // Extrair categorias únicas
+        const categories = [...new Set(
+            channels
+                .map(ch => ch.tv_genre || ch.category || ch.genre)
+                .filter(Boolean)
+        )];
 
-let filtered = channels;
-if (extra && extra.genre) {
-    filtered = channels.filter(ch =>
-        (ch.tv_genre || ch.category || ch.genre) === extra.genre
-    );
-}
+        // Filtrar por género se existir
+        let filtered = channels;
+        if (extra && extra.genre) {
+            filtered = channels.filter(ch =>
+                (ch.tv_genre || ch.category || ch.genre) === extra.genre
+            );
+        }
 
-return {
-    metas: filtered.map(ch => ({
-        id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name)}`,
-        name: ch.name,
-        type: "tv",
-        poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "",
-        posterShape: "square"
-    })),
-    genres: categories
-};
+        return {
+            metas: filtered.map(ch => ({
+                id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name)}`,
+                name: ch.name,
+                type: "tv",
+                poster: ch.logo
+                    ? (ch.logo.startsWith('http')
+                        ? ch.logo
+                        : config.url.replace(/\/$/, "") + "/c/" + ch.logo)
+                    : "",
+                posterShape: "square"
+            })),
+            genres: categories
+        };
+
+    } catch (e) {
+        return { metas: [] };
+    },
+
     async getStreams(type, id, configBase64) {
         const parts = id.split(":");
         const listIdx = parseInt(parts[1]);
