@@ -129,22 +129,46 @@ const addon = {
             return { metas: metas };
         } catch (e) { return { metas: [] }; }
     },
-
     async getStreams(type, id, configBase64, reqHost) {
         var parts = id.split(":");
         var channelId = parts[2];
         var channelName = parts.length >= 4 ? decodeURIComponent(parts[3]) : "Canal";
         
-        // Link dinâmico do Render
-        var proxyUrl = `https://${reqHost}/proxy/${configBase64}/${channelId}`;
+        const config = this.parseConfig(configBase64);
+        const auth = await this.authenticate(config.url, config);
+        
+        if (!auth) return { streams: [] };
 
-        return {
-            streams: [{
-                url: proxyUrl,
-                title: "▶️ Reproduzir " + channelName,
-                behaviorHints: { notWeb: false, isLive: true }
-            }]
-        };
+        try {
+            // Pede ao portal o link real do vídeo no momento do clique
+            const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
+            const sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+            const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
+            
+            let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
+            
+            if (typeof streamUrl === 'string') {
+                // Limpa o link
+                const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+                console.log(`[STREAM] TV vai ligar-se diretamente a: ${finalUrl}`);
+
+                // Entrega o link direto à Samsung TV!
+                return {
+                    streams: [{
+                        url: finalUrl,
+                        title: "▶️ " + channelName,
+                        behaviorHints: { 
+                            notWeb: true, // Diz ao Stremio para usar o player nativo da TV
+                            isLive: true 
+                        }
+                    }]
+                };
+            }
+        } catch (e) {
+            console.log("Erro ao obter stream:", e.message);
+        }
+
+        return { streams: [] };
     }
 };
 
