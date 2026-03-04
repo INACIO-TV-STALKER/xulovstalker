@@ -24,7 +24,6 @@ const addon = {
     parseConfig(configBase64) {
         try {
             const data = JSON.parse(Buffer.from(configBase64, 'base64').toString());
-            // Compatibilidade: se for lista única, transforma em array
             return data.lists ? data.lists : [data];
         } catch (e) { return []; }
     },
@@ -48,40 +47,34 @@ const addon = {
 
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
-        const catalogs = lists.map((l, i) => ({
-            type: "tv",
-            id: "stalker_cat_" + i,
-            name: l.name || ("Lista " + (i + 1)),
-            // 🎯 Só aqui foi adicionada a barra de Género (sem alterar mais nada)
-            extra: [
-                {
+        const catalogs = await Promise.all(lists.map(async (l, i) => {
+            let genreOptions = ["Predefinido"];
+            const auth = await this.authenticate(l);
+            if (auth) {
+                try {
+                    const gUrl = auth.api + "type=itv&action=get_genres&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
+                    const gRes = await axios.get(gUrl, { headers: auth.authData.headers, timeout: 5000 });
+                    const genres = Array.isArray(gRes.data?.js) ? gRes.data.js : [];
+                    genreOptions = genreOptions.concat(genres.map(g => g.title).filter(Boolean));
+                } catch (e) {}
+            }
+            return {
+                type: "tv",
+                id: "stalker_cat_" + i,
+                name: l.name || ("Lista " + (i + 1)),
+                extra: [{
                     name: "genre",
                     isRequired: false,
-                    options: [
-                        "Predefinido",
-                        "Notícias",
-                        "Desporto",
-                        "Entretenimento",
-                        "Filmes",
-                        "Séries",
-                        "Infantil",
-                        "Música",
-                        "Documentários",
-                        "Cultura",
-                        "Religião",
-                        "Lifestyle",
-                        "24/7",
-                        "Outros"
-                    ]
-                }
-            ]
+                    options: genreOptions
+                }]
+            };
         }));
 
         return {
             id: "org.xulov.stalker.multi",
-            version: "3.0.0",
+            version: "3.1.0",
             name: "XuloV Stalker Hub",
-            description: "Suporte para até 5 Portais Stalker",
+            description: "Suporte para até 5 Portais Stalker - Géneros reais por servidor",
             resources: ["catalog", "stream", "meta"],
             types: ["tv"],
             idPrefixes: ["xlv:"],
@@ -104,8 +97,27 @@ const addon = {
             var rawData = res.data?.js?.data || res.data?.js || [];
             var channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
 
+            // === FILTRO POR GÉNERO REAL ===
+            let filteredChannels = channels;
+            if (extra && extra.genre && extra.genre !== "Predefinido") {
+                try {
+                    const gUrl = auth.api + "type=itv&action=get_genres&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
+                    const gRes = await axios.get(gUrl, { headers: auth.authData.headers, timeout: 5000 });
+                    const genres = Array.isArray(gRes.data?.js) ? gRes.data.js : [];
+                    const genreMap = {};
+                    genres.forEach(g => {
+                        if (g.title && g.id !== undefined) genreMap[g.title.trim()] = g.id;
+                    });
+                    const genreId = genreMap[extra.genre.trim()];
+                    if (genreId !== undefined) {
+                        filteredChannels = channels.filter(ch => String(ch.tv_genre_id || "") === String(genreId));
+                    }
+                } catch (e) {}
+            }
+            // === FIM DO FILTRO ===
+
             return {
-                metas: channels.map(ch => ({
+                metas: filteredChannels.map(ch => ({
                     id: `xlv:\( {listIdx}: \){ch.id}:${encodeURIComponent(ch.name)}`,
                     name: ch.name,
                     type: "tv",
