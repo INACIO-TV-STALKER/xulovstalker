@@ -1,3 +1,4 @@
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
@@ -117,20 +118,23 @@ app.get("/configure", (req, res) => {
 
 
 // ROTAS DO STREMIO
-app.get("/:config/manifest.json", async (req, res) => {
-    res.json(await addon.getManifest(req.params.config));
-});
-
 app.get("/:config/catalog/:type/:id/:extra?.json", async (req, res) => {
     const { config, type, id, extra } = req.params;
     let extraObj = {};
     if (extra) {
-        extra.replace(".json", "").split("&").forEach(p => {
-            const [k, v] = p.split("=");
-            if (k && v) extraObj[k] = decodeURIComponent(v);
-        });
+        try {
+            // O Stremio às vezes envia o extra como string direta ou base64
+            const cleanExtra = extra.replace(".json", "");
+            if (cleanExtra.includes("=")) {
+                cleanExtra.split("&").forEach(p => {
+                    const [k, v] = p.split("=");
+                    extraObj[k] = decodeURIComponent(v);
+                });
+            }
+        } catch (e) { extraObj = {}; }
     }
-    res.json(await addon.getCatalog(type, id, extraObj, config));
+    const catalog = await addon.getCatalog(type, id, extraObj, config);
+    res.json(catalog);
 });
 
 app.get("/:config/meta/:type/:id.json", (req, res) => {

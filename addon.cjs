@@ -36,22 +36,29 @@ const addon = {
             return data.lists ? data.lists : [data];
         } catch (e) { return []; }
     },
-
     async authenticate(config) {
         if (!config || !config.url) return null;
         var authData = getStalkerAuth(config, null);
         var baseUrl = config.url.trim().replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
         if (!baseUrl.endsWith('/')) baseUrl += '/';
         var url = baseUrl + "portal.php";
+        
         try {
-            var hUrl = url + "?type=stb&action=handshake&sn=" + authData.sn + "&JsHttpRequest=1-0";
-            // Substituído axios.get por axiosGetWithAgent
-            var res = await axiosGetWithAgent(hUrl, { headers: authData.headers, timeout: 7000 });
+            // Adicionamos explicitamente o agent e aumentamos o timeout
+            var hUrl = `${url}?type=stb&action=handshake&sn=${authData.sn}&JsHttpRequest=1-0`;
+            var res = await axios.get(hUrl, { 
+                headers: authData.headers, 
+                timeout: 10000 
+            });
+            
             var token = res.data?.js?.token || res.data?.token || null;
             if (token) {
                 return { token: token, api: url + "?", authData: getStalkerAuth(config, token) };
             }
-        } catch (e) { return null; }
+        } catch (e) { 
+            console.error("Erro Auth:", e.message);
+            return null; 
+        }
     },
 
     async getManifest(configBase64) {
