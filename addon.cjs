@@ -114,7 +114,7 @@ async getCatalog(type, id, extra, configBase64) {
     } catch (e) {
         return { metas: [] };
     }
-}
+},
     async getStreams(type, id, configBase64) {
         const parts = id.split(":");
         const listIdx = parseInt(parts[1]);
