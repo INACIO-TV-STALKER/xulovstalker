@@ -2,7 +2,7 @@ const axios = require("axios");
 const crypto = require("crypto");
 
 const getStalkerAuth = function(config, token) {
-    var mac = config.mac.toUpperCase();
+    var mac = (config.mac || "").toUpperCase();
     var seed = mac.replace(/:/g, "");
     var id1 = config.id1 || crypto.createHash('md5').update(seed + "id1").digest('hex').toUpperCase();
     var id2 = config.id2 || crypto.createHash('md5').update(seed + "id2").digest('hex').toUpperCase();
@@ -15,9 +15,7 @@ const getStalkerAuth = function(config, token) {
         headers: {
             "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3",
             "X-User-Agent": "Model: " + (config.model || 'MAG254') + "; SW: 2.18-r14-254; Device ID: " + id1 + "; Device ID2: " + id2 + "; Signature: " + sig + ";",
-            "Cookie": cookie,
-            "Accept": "*/*",
-            "Referer": config.url.replace(/\/$/, "") + "/c/"
+            "Cookie": cookie, "Accept": "*/*", "Referer": config.url.replace(/\/$/, "") + "/c/"
         }
     };
 };
@@ -25,149 +23,96 @@ const getStalkerAuth = function(config, token) {
 const addon = {
     parseConfig(configBase64) {
         try {
-            if (!configBase64) return null;
-            return JSON.parse(Buffer.from(configBase64, 'base64').toString());
-        } catch (e) { return null; }
+            const data = JSON.parse(Buffer.from(configBase64, 'base64').toString());
+            // Compatibilidade: se for lista única, transforma em array
+            return data.lists ? data.lists : [data];
+        } catch (e) { return []; }
     },
 
-    async authenticate(portalUrl, config) {
-        if (!config || !portalUrl) return null;
+    async authenticate(config) {
+        if (!config || !config.url) return null;
         var authData = getStalkerAuth(config, null);
-        var baseUrl = portalUrl.trim().replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
+        var baseUrl = config.url.trim().replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
         if (!baseUrl.endsWith('/')) baseUrl += '/';
         var url = baseUrl + "portal.php";
-        
         try {
             var hUrl = url + "?type=stb&action=handshake&sn=" + authData.sn + "&device_id=" + authData.id1 + "&JsHttpRequest=1-0";
-            var res = await axios.get(hUrl, { headers: authData.headers, timeout: 6000 });
+            var res = await axios.get(hUrl, { headers: authData.headers, timeout: 5000 });
             var token = res.data?.js?.token || res.data?.token || null;
             if (token) {
                 var fullAuth = getStalkerAuth(config, token);
-                var pUrl = url + "?type=stb&action=get_profile&sn=" + fullAuth.sn + "&stb_type=" + (config.model || 'MAG254') + "&device_id=" + fullAuth.id1 + "&JsHttpRequest=1-0";
-                await axios.get(pUrl, { headers: fullAuth.headers });
                 return { token: token, api: url + "?", authData: fullAuth };
             }
         } catch (e) { return null; }
     },
 
-    // MANIFESTO: Vai buscar as categorias em tempo real!
     async getManifest(configBase64) {
-        const config = this.parseConfig(configBase64);
-        let options = ["Todas"];
-
-        if (config) {
-            const auth = await this.authenticate(config.url, config);
-            if (auth) {
-                try {
-                    const catUrl = `${auth.api}type=itv&action=get_genres&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                    const catRes = await axios.get(catUrl, { headers: auth.authData.headers });
-                    const rawCats = catRes.data?.js?.data || catRes.data?.js || [];
-                    const categories = Array.isArray(rawCats) ? rawCats : Object.values(rawCats);
-                    categories.forEach(c => { if (c.title) options.push(c.title); });
-                } catch (e) { console.log("Erro categorias:", e.message); }
-            }
-        }
+        const lists = this.parseConfig(configBase64);
+        const catalogs = lists.map((l, i) => ({
+            type: "tv",
+            id: "stalker_cat_" + i,
+            name: l.name || ("Lista " + (i + 1))
+        }));
 
         return {
-            id: "org.xulov.stalker.tizen",
-            version: "2.0.0",
-            name: "XuloV Stalker Tizen" + (config ? " ✅" : ""),
-            description: "Otimizado para Samsung TV e Render",
+            id: "org.xulov.stalker.multi",
+            version: "3.0.0",
+            name: "XuloV Stalker Hub",
+            description: "Suporte para até 5 Portais Stalker",
             resources: ["catalog", "stream", "meta"],
             types: ["tv"],
-            idPrefixes: ["stalker:"],
-            catalogs: config ? [{
-                type: "tv",
-                id: "stalker_live",
-                name: "Canais IPTV",
-                extra: [{ name: "genre", options: options, isRequired: false }]
-            }] : []
+            idPrefixes: ["xlv:"],
+            catalogs: catalogs
         };
     },
 
     async getCatalog(type, id, extra, configBase64) {
-        const config = this.parseConfig(configBase64);
-        const auth = await this.authenticate(config.url, config);
+        const lists = this.parseConfig(configBase64);
+        const listIdx = parseInt(id.replace("stalker_cat_", ""));
+        const config = lists[listIdx];
+        if (!config) return { metas: [] };
+
+        const auth = await this.authenticate(config);
         if (!auth) return { metas: [] };
 
         try {
-            var genreSelected = (extra && extra.genre) ? extra.genre.trim() : "Todas";
-            
-            // Busca canais
-            var url = auth.api + "type=itv&action=get_all_channels&sn=" + auth.authData.sn + "&token=" + auth.token + "&to_ch=10000&JsHttpRequest=1-0";
-            var res = await axios.get(url, { headers: auth.authData.headers, timeout: 15000 });
-            var rawData = res.data?.js?.data || res.data?.js || res.data?.data || [];
-            var allChannels = Array.isArray(rawData) ? rawData : Object.values(rawData);
+            var url = auth.api + "type=itv&action=get_all_channels&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
+            var res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
+            var rawData = res.data?.js?.data || res.data?.js || [];
+            var channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
 
-            // Se for preciso filtrar por categoria, vamos buscar o ID da categoria
-            if (genreSelected !== "Todas") {
-                const catUrl = `${auth.api}type=itv&action=get_genres&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                const catRes = await axios.get(catUrl, { headers: auth.authData.headers });
-                const cats = Array.isArray(catRes.data?.js?.data) ? catRes.data.js.data : Object.values(catRes.data?.js?.data || {});
-                const foundCat = cats.find(c => c.title === genreSelected);
-                if (foundCat) {
-                    allChannels = allChannels.filter(ch => (ch.category_id || ch.tv_genre_id || "").toString() === foundCat.id.toString());
-                }
-            }
-
-            var metas = [];
-            var seenIds = new Set();
-
-            allChannels.forEach(function(ch) {
-                if (ch && ch.id && !seenIds.has(ch.id)) {
-                    seenIds.add(ch.id);
-                    metas.push({
-                        id: "stalker:live:" + ch.id + ":" + encodeURIComponent(ch.name || "Canal"),
-                        name: ch.name || "Canal",
-                        type: "tv",
-                        poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "",
-                        posterShape: "square",
-                        description: ch.name || ""
-                    });
-                }
-            });
-            return { metas: metas };
+            return {
+                metas: channels.map(ch => ({
+                    id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name)}`,
+                    name: ch.name,
+                    type: "tv",
+                    poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "",
+                    posterShape: "square"
+                }))
+            };
         } catch (e) { return { metas: [] }; }
     },
-    async getStreams(type, id, configBase64, reqHost) {
-        var parts = id.split(":");
-        var channelId = parts[2];
-        var channelName = parts.length >= 4 ? decodeURIComponent(parts[3]) : "Canal";
+
+    async getStreams(type, id, configBase64) {
+        const parts = id.split(":");
+        const listIdx = parseInt(parts[1]);
+        const channelId = parts[2];
+        const channelName = decodeURIComponent(parts[3] || "Canal");
         
-        const config = this.parseConfig(configBase64);
-        const auth = await this.authenticate(config.url, config);
-        
+        const lists = this.parseConfig(configBase64);
+        const config = lists[listIdx];
+        const auth = await this.authenticate(config);
         if (!auth) return { streams: [] };
 
         try {
-            // Pede ao portal o link real do vídeo no momento do clique
             const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
             const sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
             const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
-            
-            let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
-            
-            if (typeof streamUrl === 'string') {
-                // Limpa o link
-                const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-                console.log(`[STREAM] TV vai ligar-se diretamente a: ${finalUrl}`);
-
-                // Entrega o link direto à Samsung TV!
-                return {
-                    streams: [{
-                        url: finalUrl,
-                        title: "▶️ " + channelName,
-                        behaviorHints: { 
-                            notWeb: true, // Diz ao Stremio para usar o player nativo da TV
-                            isLive: true 
-                        }
-                    }]
-                };
+            let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || "";
+            if (streamUrl) {
+                return { streams: [{ url: streamUrl.replace(/^(ffrt|ffmpeg|rtmp)\s+/, "").trim(), title: "▶️ " + channelName }] };
             }
-        } catch (e) {
-            console.log("Erro ao obter stream:", e.message);
-        }
-
+        } catch (e) {}
         return { streams: [] };
     }
 };

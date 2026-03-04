@@ -19,64 +19,97 @@ app.get("/", (req, res) => res.redirect("/configure"));
 app.get("/configure", (req, res) => {
     res.send(`
         <!DOCTYPE html>
-
-        <html><head><title>XuloV Tizen Config</title>
+        <html><head><title>XuloV Hub Config</title>
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
-            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0c0d19; color: white; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
-            .box { background: #1b1d30; padding: 30px; border-radius: 15px; width: 90%; max-width: 450px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
-            h2 { color: #007bff; margin-bottom: 20px; }
-            label { display: block; text-align: left; font-size: 12px; color: #aaa; margin-top: 10px; margin-left: 5px; }
-            input, select { width: 100%; padding: 12px; margin: 5px 0 15px 0; border-radius: 8px; border: 1px solid #333; background: #222; color: white; box-sizing: border-box; font-size: 14px; }
-            input:focus { border-color: #007bff; outline: none; }
-            button { width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 16px; margin-top: 10px; transition: 0.3s; }
-            button:hover { background: #0056b3; }
-            .footer { margin-top: 20px; font-size: 11px; color: #666; }
+            body { font-family: sans-serif; background: #0c0d19; color: white; padding: 20px; }
+            .container { max-width: 500px; margin: auto; }
+            .list-box { background: #1b1d30; padding: 20px; border-radius: 12px; margin-bottom: 20px; border-left: 5px solid #007bff; position: relative; }
+            h3 { margin-top: 0; color: #007bff; font-size: 16px; }
+            label { display: block; font-size: 11px; color: #888; margin-top: 8px; font-weight: bold; }
+            input, select { width: 100%; padding: 10px; margin: 4px 0; border-radius: 6px; border: 1px solid #333; background: #222; color: white; box-sizing: border-box; }
+            .remove-btn { position: absolute; top: 10px; right: 10px; color: #ff4444; cursor: pointer; font-size: 12px; font-weight: bold; }
+            .add-btn { background: #28a745; color: white; border: none; padding: 12px; width: 100%; border-radius: 8px; cursor: pointer; font-weight: bold; margin-bottom: 15px; }
+            .install-btn { background: #007bff; color: white; border: none; padding: 18px; width: 100%; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 18px; }
+            .advanced { display: none; background: #141526; padding: 10px; border-radius: 8px; margin-top: 10px; }
+            .adv-toggle { color: #007bff; font-size: 12px; cursor: pointer; text-decoration: underline; margin-top: 5px; display: block; }
         </style></head>
         <body>
-            <div class="box">
-                <h2>XuloV Stalker Pro</h2>
-                
-                <label>NOME DA LISTA (Ex: Minha IPTV)</label>
-                <input type="text" id="name" placeholder="Dá um nome a esta lista...">
-
-                <label>URL DO PORTAL (http://...)</label>
-                <input type="text" id="url" placeholder="http://exemplo.com:8080/c/">
-
-                <label>ENDEREÇO MAC (00:1A:79:...)</label>
-                <input type="text" id="mac" placeholder="00:1A:79:XX:XX:XX">
-
-                <label>MODELO DA BOX (EMULAÇÃO)</label>
-                <select id="model">
-                    <option value="MAG250">MAG 250 (Antiga/Básica)</option>
-                    <option value="MAG254" selected>MAG 254 (Padrão Ouro)</option>
-                    <option value="MAG256">MAG 256 (Processamento Rápido)</option>
-                    <option value="MAG322">MAG 322 (Estável)</option>
-                    <option value="MAG424">MAG 424 (Suporte 4K)</option>
-                    <option value="MAG522">MAG 522 (Moderna/HEVC)</option>
-                    <option value="WR320">AuraHD (Compatibilidade Extra)</option>
-                </select>
-
-                <button onclick="instalar()">🚀 INSTALAR NO STREMIO</button>
-                <div class="footer">Otimizado para Samsung Tizen & Android</div>
+            <div class="container">
+                <h2 style="text-align:center">XuloV Stalker Hub</h2>
+                <div id="lists-container"></div>
+                <button class="add-btn" onclick="addList()">+ Adicionar Nova Lista (Máx 5)</button>
+                <button class="install-btn" onclick="install()">🚀 INSTALAR NO STREMIO</button>
             </div>
 
             <script>
-                function instalar() {
-                    const name = document.getElementById('name').value.trim() || "Stalker IPTV";
-                    const url = document.getElementById('url').value.trim();
-                    const mac = document.getElementById('mac').value.trim();
-                    const model = document.getElementById('model').value;
+                let listCount = 0;
 
-                    if(!url || !mac) return alert("Por favor, preenche o URL e o MAC!");
+                function addList() {
+                    if(listCount >= 5) return alert("Máximo de 5 listas atingido!");
+                    listCount++;
+                    const id = Date.now();
+                    const html = \`
+                        <div class="list-box" id="box-\${id}">
+                            <div class="remove-btn" onclick="removeList(\${id})">REMOVER</div>
+                            <h3>LISTA #\${listCount}</h3>
+                            <label>NOME DA LISTA</label>
+                            <input type="text" class="name" placeholder="Ex: IPTV Portugal">
+                            <label>URL PORTAL</label>
+                            <input type="text" class="url" placeholder="http://portal.com:8080/c/">
+                            <label>MAC ADDRESS</label>
+                            <input type="text" class="mac" placeholder="00:1A:79:XX:XX:XX">
+                            <label>BOX MODEL</label>
+                            <select class="model">
+                                <option value="MAG250">MAG 250</option>
+                                <option value="MAG254">MAG 254</option>
+                                <option value="MAG256">MAG 256</option>
+                                <option value="MAG322">MAG 322</option>
+                                <option value="MAG424">MAG 424</option>
+                                <option value="MAG522">MAG 522</option>
+                            </select>
+                            <span class="adv-toggle" onclick="toggleAdv(\${id})">Configurações Avançadas</span>
+                            <div class="advanced" id="adv-\${id}">
+                                <label>SERIAL NUMBER (SN)</label><input type="text" class="sn">
+                                <label>DEVICE ID 1</label><input type="text" class="id1">
+                                <label>DEVICE ID 2</label><input type="text" class="id2">
+                                <label>SIGNATURE</label><input type="text" class="sig">
+                            </div>
+                        </div>\`;
+                    document.getElementById('lists-container').insertAdjacentHTML('beforeend', html);
+                }
 
-                    // Criamos o objeto de configuração incluindo o Nome
-                    const config = { name, url, mac, model };
-                    const b64 = btoa(JSON.stringify(config));
+                function removeList(id) {
+                    document.getElementById('box-'+id).remove();
+                    listCount--;
+                }
+
+                function toggleAdv(id) {
+                    const el = document.getElementById('adv-'+id);
+                    el.style.display = el.style.display === 'block' ? 'none' : 'block';
+                }
+
+                function install() {
+                    const boxes = document.querySelectorAll('.list-box');
+                    if(boxes.length === 0) return alert("Adiciona pelo menos uma lista!");
                     
-                    // Redireciona para o protocolo do Stremio
+                    const lists = Array.from(boxes).map(box => ({
+                        name: box.querySelector('.name').value.trim(),
+                        url: box.querySelector('.url').value.trim(),
+                        mac: box.querySelector('.mac').value.trim(),
+                        model: box.querySelector('.model').value,
+                        sn: box.querySelector('.sn').value.trim(),
+                        id1: box.querySelector('.id1').value.trim(),
+                        id2: box.querySelector('.id2').value.trim(),
+                        sig: box.querySelector('.sig').value.trim()
+                    }));
+
+                    const config = { lists };
+                    const b64 = btoa(JSON.stringify(config));
                     window.location.href = "stremio://" + window.location.host + "/" + b64 + "/manifest.json";
                 }
+
+                addList(); // Inicia com uma lista
             </script>
         </body></html>
     `);
