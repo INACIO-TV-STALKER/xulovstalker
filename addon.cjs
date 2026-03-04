@@ -45,26 +45,53 @@ const addon = {
             }
         } catch (e) { return null; }
     },
+async getManifest(configBase64) {
+    const lists = this.parseConfig(configBase64);
 
-    async getManifest(configBase64) {
-        const lists = this.parseConfig(configBase64);
-        const catalogs = lists.map((l, i) => ({
-              type: "tv",
-              id: "stalker_cat_" + i,
-              name: l.name || ("Lista " + (i + 1)),
-              extra: [{ name: "genre", isRequired: false }],
-              genres: []
-        }));
-        return {
-            id: "org.xulov.stalker.multi",
-            version: "3.0.0",
-            name: "XuloV Stalker Hub",
-            description: "Suporte para até 5 Portais Stalker",
-            resources: ["catalog", "stream", "meta"],
-            types: ["tv"],
-            idPrefixes: ["xlv:"],
-            catalogs: catalogs
-        };
+    const catalogs = [];
+
+    for (let i = 0; i < lists.length; i++) {
+        const config = lists[i];
+        let genres = [];
+
+        const auth = await this.authenticate(config);
+        if (auth) {
+            try {
+                const url = auth.api + "type=itv&action=get_all_channels&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
+                const res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
+
+                const rawData = res.data?.js?.data || res.data?.js || [];
+                const channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
+
+                genres = [...new Set(
+                    channels
+                        .map(ch => ch.tv_genre || ch.category || ch.genre)
+                        .filter(Boolean)
+                )];
+
+            } catch (e) {}
+        }
+
+        catalogs.push({
+            type: "tv",
+            id: "stalker_cat_" + i,
+            name: config.name || ("Lista " + (i + 1)),
+            extra: [{ name: "genre", isRequired: false }],
+            genres: genres
+        });
+    }
+
+    return {
+        id: "org.xulov.stalker.multi",
+        version: "3.0.0",
+        name: "XuloV Stalker Hub",
+        description: "Suporte para até 5 Portais Stalker",
+        resources: ["catalog", "stream", "meta"],
+        types: ["tv"],
+        idPrefixes: ["xlv:"],
+        catalogs: catalogs
+    };
+}
     },
 async getCatalog(type, id, extra, configBase64) {
     const lists = this.parseConfig(configBase64);
