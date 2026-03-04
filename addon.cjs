@@ -32,7 +32,7 @@ const addon = {
     async authenticate(config) {
         if (!config || !config.url) return null;
         var authData = getStalkerAuth(config, null);
-        var baseUrl = config.url.trim().replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
+        var baseUrl = config.url.trim().replace(/\/c\/?\( /, "").replace(/\/portal\.php\/? \)/, "");
         if (!baseUrl.endsWith('/')) baseUrl += '/';
         var url = baseUrl + "portal.php";
         try {
@@ -45,109 +45,83 @@ const addon = {
             }
         } catch (e) { return null; }
     },
-async getManifest(configBase64) {
-    const lists = this.parseConfig(configBase64);
 
-    const catalogs = [];
-
-    for (let i = 0; i < lists.length; i++) {
-        const config = lists[i];
-        let genres = [];
-
-        const auth = await this.authenticate(config);
-        if (auth) {
-            try {
-                const url = auth.api + "type=itv&action=get_all_channels&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
-                const res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
-
-                const rawData = res.data?.js?.data || res.data?.js || [];
-                const channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
-
-                genres = [...new Set(
-                    channels
-                        .map(ch => ch.tv_genre || ch.category || ch.genre)
-                        .filter(Boolean)
-                )];
-
-            } catch (e) {}
-        }
-
-        catalogs.push({
+    async getManifest(configBase64) {
+        const lists = this.parseConfig(configBase64);
+        const catalogs = lists.map((l, i) => ({
             type: "tv",
             id: "stalker_cat_" + i,
-            name: config.name || ("Lista " + (i + 1)),
-            extra: [{ name: "genre", isRequired: false }],
-            genres: genres
-        });
-    }
-
-    return {
-        id: "org.xulov.stalker.multi",
-        version: "3.0.0",
-        name: "XuloV Stalker Hub",
-        description: "Suporte para até 5 Portais Stalker",
-        resources: ["catalog", "stream", "meta"],
-        types: ["tv"],
-        idPrefixes: ["xlv:"],
-        catalogs: catalogs
-    };
-}
-    },
-async getCatalog(type, id, extra, configBase64) {
-    const lists = this.parseConfig(configBase64);
-    const listIdx = parseInt(id.replace("stalker_cat_", ""));
-    const config = lists[listIdx];
-    if (!config) return { metas: [] };
-
-    const auth = await this.authenticate(config);
-    if (!auth) return { metas: [] };
-
-    try {
-        var url = auth.api + "type=itv&action=get_all_channels&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
-        var res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
-        var rawData = res.data?.js?.data || res.data?.js || [];
-        var channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
-
-        // Extrair categorias únicas
-        const categories = [...new Set(
-            channels
-                .map(ch => ch.tv_genre || ch.category || ch.genre)
-                .filter(Boolean)
-        )];
-
-        // Filtrar por género se existir
-        let filtered = channels;
-        if (extra && extra.genre) {
-            filtered = channels.filter(ch =>
-                (ch.tv_genre || ch.category || ch.genre) === extra.genre
-            );
-        }
+            name: l.name || ("Lista " + (i + 1)),
+            // 🎯 Só aqui foi adicionada a barra de Género (sem alterar mais nada)
+            extra: [
+                {
+                    name: "genre",
+                    isRequired: false,
+                    options: [
+                        "Predefinido",
+                        "Notícias",
+                        "Desporto",
+                        "Entretenimento",
+                        "Filmes",
+                        "Séries",
+                        "Infantil",
+                        "Música",
+                        "Documentários",
+                        "Cultura",
+                        "Religião",
+                        "Lifestyle",
+                        "24/7",
+                        "Outros"
+                    ]
+                }
+            ]
+        }));
 
         return {
-            metas: filtered.map(ch => ({
-                id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name)}`,
-                name: ch.name,
-                type: "tv",
-                poster: ch.logo
-                    ? (ch.logo.startsWith('http')
-                        ? ch.logo
-                        : config.url.replace(/\/$/, "") + "/c/" + ch.logo)
-                    : "",
-                posterShape: "square"
-            })),
-            genres: categories
+            id: "org.xulov.stalker.multi",
+            version: "3.0.0",
+            name: "XuloV Stalker Hub",
+            description: "Suporte para até 5 Portais Stalker",
+            resources: ["catalog", "stream", "meta"],
+            types: ["tv"],
+            idPrefixes: ["xlv:"],
+            catalogs: catalogs
         };
+    },
 
-    } catch (e) {
-        return { metas: [] };
-    }
-},
+    async getCatalog(type, id, extra, configBase64) {
+        const lists = this.parseConfig(configBase64);
+        const listIdx = parseInt(id.replace("stalker_cat_", ""));
+        const config = lists[listIdx];
+        if (!config) return { metas: [] };
+
+        const auth = await this.authenticate(config);
+        if (!auth) return { metas: [] };
+
+        try {
+            var url = auth.api + "type=itv&action=get_all_channels&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
+            var res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
+            var rawData = res.data?.js?.data || res.data?.js || [];
+            var channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
+
+            return {
+                metas: channels.map(ch => ({
+                    id: `xlv:\( {listIdx}: \){ch.id}:${encodeURIComponent(ch.name)}`,
+                    name: ch.name,
+                    type: "tv",
+                    poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "",
+                    posterShape: "square"
+                }))
+            };
+        } catch (e) { return { metas: [] }; }
+    },
+
     async getStreams(type, id, configBase64) {
         const parts = id.split(":");
         const listIdx = parseInt(parts[1]);
         const channelId = parts[2];
         const channelName = decodeURIComponent(parts[3] || "Canal");
-        
+
         const lists = this.parseConfig(configBase64);
         const config = lists[listIdx];
         const auth = await this.authenticate(config);
@@ -155,7 +129,7 @@ async getCatalog(type, id, extra, configBase64) {
 
         try {
             const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
-            const sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+            const sUrl = `\( {auth.api}type=itv&action=create_link&cmd= \){cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
             const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
             let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || "";
             if (streamUrl) {
@@ -167,4 +141,3 @@ async getCatalog(type, id, extra, configBase64) {
 };
 
 module.exports = addon;
-
