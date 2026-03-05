@@ -78,7 +78,7 @@ const addon = {
 
         return {
             id: "org.xulov.stalker.multi",
-            version:"3.1.8",
+            version:"3.3.0",
             name: "XuloV Stalker Hub",
             description: "Suporte para até 5 Portais Stalker - Géneros reais + streams em Render",
             resources: ["catalog", "stream", "meta"],
