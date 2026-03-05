@@ -132,6 +132,16 @@ app.get("/:config/catalog/:type/:id/:extra?.json", async (req, res) => {
     res.json(await addon.getCatalog(type, id, extraObj, config));
 });
 
+app.get('/:config/meta/:type/:id.json', async (req, res) => {
+    const { config, type, id } = req.params;
+    try {
+        const meta = await addon.getMeta(type, id, config);
+        res.json(meta);
+    } catch (e) {
+        res.status(500).json({ meta: {} });
+    }
+});
+
 app.get("/:config/meta/:type/:id.json", (req, res) => {
     const parts = req.params.id.split(":");
     let channelName = parts.length >= 4 ? decodeURIComponent(parts[3]) : "Canal IPTV";
@@ -143,55 +153,46 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
 
-// O SEGREDO PARA A TIZEN TV (Faz o pipe do vídeo com cabeçalhos corretos)
-// ERRO CORRIGIDO: Adicionado o :listIdx na rota para o proxy saber que lista da Array deve autenticar
-app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
+app.get('/proxy/:config/:listIdx/:channelId', async (req, res) => {
     const { config, listIdx, channelId } = req.params;
-
-    // Agora o proxy sabe extrair a lista certa do Array
+    const type = req.query.type || 'tv'; 
+    
     const lists = addon.parseConfig(config);
-    const configData = lists[listIdx];
-    if (!configData) return res.status(400).end();
+    const list = lists[parseInt(listIdx)];
+    if (!list) return res.status(404).send("Lista não encontrada");
 
-    // ERRO CORRIGIDO: authenticate recebe 1 argumento (o config), não 2.
-    const auth = await addon.authenticate(configData);
-    if (!auth) return res.status(401).end();
+    const auth = await addon.authenticate(list);
+    if (!auth) return res.status(401).send("Falha na autenticação");
 
     try {
-        const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
-        const sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
-        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
-
-        let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
-        if (typeof streamUrl === 'string') {
-            const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-            console.log(`[PROXY] Tizen TV a pedir canal ${channelId} da lista ${listIdx}...`);
-
-            try {
-                const videoResponse = await axios({
-                    method: 'get',
-                    url: finalUrl,
-                    headers: auth.authData.headers,
-                    responseType: 'stream',
-                    maxRedirects: 5
-                });
-
-                res.setHeader("Access-Control-Allow-Origin", "*");
-                res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp2t");
-
-                // Envia o fluxo de vídeo para a TV
-                videoResponse.data.pipe(res);
-
-            } catch (vidErr) {
-                console.log("Erro no stream:", vidErr.message);
-                res.status(500).end();
-            }
-
+        let action = 'create_link';
+        let param = '';
+        
+        // Cada tipo precisa de um pedido diferente ao Stalker
+        if (type === 'movie') {
+            action = 'get_vod_uri';
+            param = `id=${channelId}`;
+        } else if (type === 'series') {
+            action = 'create_link';
+            param = `cmd=${channelId}`; // Séries costumam vir com o comando completo
+        } else { // TV (Canais)
+            action = 'create_link';
+            param = `cmd=ffrt%20${channelId}`;
+        }
+        
+        const streamUrl = `${auth.api}type=itv&action=${action}&${param}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+        const streamRes = await axios.get(streamUrl, { headers: auth.authData.headers });
+        
+        let videoUrl = streamRes.data?.js?.cmd || streamRes.data?.js;
+        
+        if (videoUrl && videoUrl.includes("http")) {
+            videoUrl = videoUrl.replace(/ffrt /g, "").replace(/ffmpeg /g, "");
+            res.redirect(videoUrl);
         } else {
-            res.status(404).end();
+            res.status(500).send("Link de vídeo não disponível.");
         }
     } catch (e) {
-        res.status(500).end();
+        res.status(500).send("Erro no proxy.");
     }
 });
 
