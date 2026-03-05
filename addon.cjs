@@ -45,7 +45,6 @@ const addon = {
             }
         } catch (e) { return null; }
     },
-
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
         const catalogs = await Promise.all(lists.map(async (l, i) => {
@@ -57,9 +56,12 @@ const addon = {
                     const gRes = await axios.get(gUrl, { headers: auth.authData.headers, timeout: 5000 });
                     const genres = Array.isArray(gRes.data?.js) ? gRes.data.js : [];
                     
-                    // CORREÇÃO 1: Adiciona géneros do portal e remove duplicados (ex: se já existir Predefinido ou All)
-                    const portalGenres = genres.map(g => g.title).filter(Boolean);
-                    genreOptions = [...new Set([...genreOptions, ...portalGenres])];
+                    // FILTRO MÁGICO: Remove "All" e "Predefinido" vindos do portal para não haver duplicados
+                    const portalGenres = genres
+                        .map(g => g.title ? g.title.trim() : "")
+                        .filter(title => title && title.toLowerCase() !== "all" && title.toLowerCase() !== "predefinido");
+                    
+                    genreOptions = [...genreOptions, ...portalGenres];
                 } catch (e) {}
             }
             return {
@@ -103,9 +105,10 @@ const addon = {
 
             let filteredChannels = channels;
             
-            // CORREÇÃO 2: Se for "Predefinido" ou "All", ignora o filtro e mostra tudo
-            const selectedGenre = extra?.genre?.trim();
-            if (selectedGenre && selectedGenre !== "Predefinido" && selectedGenre !== "All") {
+            const selectedGenre = extra?.genre ? extra.genre.trim() : "";
+            
+            // SE O UTILIZADOR ESCOLHER "Predefinido" ou "All", NÃO FILTRA NADA (Mostra tudo!)
+            if (selectedGenre && selectedGenre !== "Predefinido" && selectedGenre.toLowerCase() !== "all") {
                 try {
                     const gUrl = auth.api + "type=itv&action=get_genres&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
                     const gRes = await axios.get(gUrl, { headers: auth.authData.headers, timeout: 5000 });
