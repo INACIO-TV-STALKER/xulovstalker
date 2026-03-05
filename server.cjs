@@ -141,7 +141,6 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
-
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -155,14 +154,12 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
     try {
         let sUrl = "";
-        // CORREÇÃO CRUCIAL: Descodificamos para limpar os "%253D%253D" do Stremio
         let cleanId = decodeURIComponent(channelId);
         
         if (type === "series" || type === "movie") {
-            // CORREÇÃO: Séries e filmes no Stalker exigem o parâmetro "cmd" quando o ID é um hash Base64
             sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
         } else {
-            // LÓGICA DE TV ORIGINAL (INTACTA)
+            // TV ORIGINAL
             const cmd = encodeURIComponent(`ffrt http://localhost/ch/${cleanId}`);
             sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
         }
@@ -170,38 +167,43 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
         let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
 
-        // Fallback de segurança para alguns portais que exigem get_vod_uri nos Filmes
         if (!streamUrl && type === "movie") {
             const altUrl = `${auth.api}type=vod&action=get_vod_uri&movie_id=${cleanId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             const altRes = await axios.get(altUrl, { headers: auth.authData.headers });
             streamUrl = altRes.data?.js?.cmd || altRes.data?.js;
         }
         
-        // Verifica se realmente recebemos um link HTTP válido do Stalker
-        if (typeof streamUrl === 'string' && streamUrl.startsWith('http')) {
+        if (typeof streamUrl === 'string') {
+            // CORREÇÃO: Limpamos o "ffmpeg" ANTES de validar se é HTTP
             const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-            console.log(`[PROXY] Link Final gerado para ${type}: ${finalUrl}`);
+            
+            if (finalUrl.startsWith('http')) {
+                console.log(`[PROXY] Link Final gerado para ${type}: ${finalUrl}`);
 
-            try {
-                const videoResponse = await axios({
-                    method: 'get',
-                    url: finalUrl,
-                    headers: auth.authData.headers,
-                    responseType: 'stream',
-                    maxRedirects: 5,
-                    timeout: 15000 
-                });
+                try {
+                    const videoResponse = await axios({
+                        method: 'get',
+                        url: finalUrl,
+                        headers: auth.authData.headers,
+                        responseType: 'stream',
+                        maxRedirects: 5,
+                        timeout: 15000 
+                    });
 
-                res.setHeader("Access-Control-Allow-Origin", "*");
-                res.setHeader("Content-Type", videoResponse.headers['content-type'] || (type === "tv" ? "video/mp2t" : "video/mp4"));
-                videoResponse.data.pipe(res);
+                    res.setHeader("Access-Control-Allow-Origin", "*");
+                    res.setHeader("Content-Type", videoResponse.headers['content-type'] || (type === "tv" ? "video/mp2t" : "video/mp4"));
+                    videoResponse.data.pipe(res);
 
-            } catch (vidErr) {
-                console.log("[ERRO STREAM]:", vidErr.message);
-                res.status(500).end();
+                } catch (vidErr) {
+                    console.log("[ERRO STREAM]:", vidErr.message);
+                    res.status(500).end();
+                }
+            } else {
+                console.log(`[AVISO] O link não é HTTP válido após limpeza:`, finalUrl);
+                res.status(404).end();
             }
         } else {
-            console.log(`[AVISO] Portal não devolveu link válido. Resposta do portal:`, JSON.stringify(linkRes.data));
+            console.log(`[AVISO] Portal não devolveu link válido. Resposta:`, JSON.stringify(linkRes.data));
             res.status(404).end();
         }
     } catch (e) {
