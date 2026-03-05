@@ -29,33 +29,17 @@ class StalkerAddon {
         const lists = this.parseConfig(configBase64);
         const catalogs = [];
 
-        // Lógica ultra-rápida: não consulta servidores aqui para não dar timeout na instalação
         lists.forEach((l, i) => {
-            catalogs.push({
-                type: "tv",
-                id: `stalker_tv_${i}`,
-                name: `${l.name || 'Lista '+(i+1)} 📺`,
-                extra: [{ name: "genre", isRequired: false }]
-            });
-            catalogs.push({
-                type: "movie",
-                id: `stalker_mov_${i}`,
-                name: `${l.name || 'Lista '+(i+1)} 🎬`,
-                extra: [{ name: "skip", isRequired: false }]
-            });
-            catalogs.push({
-                type: "series",
-                id: `stalker_ser_${i}`,
-                name: `${l.name || 'Lista '+(i+1)} 🍿`,
-                extra: [{ name: "skip", isRequired: false }]
-            });
+            catalogs.push({ type: "tv", id: `stalker_tv_${i}`, name: `${l.name || 'Lista '+(i+1)} 📺` });
+            catalogs.push({ type: "movie", id: `stalker_mov_${i}`, name: `${l.name || 'Lista '+(i+1)} 🎬`, extra: [{ name: "skip", isRequired: false }] });
+            catalogs.push({ type: "series", id: `stalker_ser_${i}`, name: `${l.name || 'Lista '+(i+1)} 🍿`, extra: [{ name: "skip", isRequired: false }] });
         });
 
         return {
             id: "org.xulov.stalker.multi",
-            version: "3.8.0",
+            version: "3.9.0",
             name: "XuloV Stalker Hub",
-            description: "Canais, Filmes e Séries - Completo",
+            description: "TV, Filmes e Séries",
             resources: ["catalog", "stream", "meta"],
             types: ["tv", "movie", "series"],
             idPrefixes: ["xlv:"],
@@ -73,42 +57,28 @@ class StalkerAddon {
         if (!auth) return { metas: [] };
 
         try {
-            if (type === "tv") {
-                const url = `${auth.api}type=itv&action=get_all_channels&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                const res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
-                const rawData = res.data?.js?.data || res.data?.js || [];
-                let channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
-                return {
-                    metas: channels.map(ch => ({
-                        id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name)}`,
-                        name: ch.name,
-                        type: "tv",
-                        poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "",
-                        posterShape: "square"
-                    }))
-                };
-            }
+            const stalkerType = type === "tv" ? "itv" : (type === "movie" ? "vod" : "series");
+            const action = type === "tv" ? "get_all_channels" : "get_ordered_list";
+            const pageSize = 60;
+            const page = extra?.skip ? Math.floor(extra.skip / pageSize) + 1 : 1;
+            
+            let url = `${auth.api}type=${stalkerType}&action=${action}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+            if (type !== "tv") url += `&p=${page}`;
 
-            if (type === "movie" || type === "series") {
-                const stalkerType = type === "movie" ? "vod" : "series";
-                const pageSize = 60;
-                const page = extra.skip ? Math.floor(extra.skip / pageSize) + 1 : 1;
-                const url = `${auth.api}type=${stalkerType}&action=get_ordered_list&p=${page}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                const res = await axios.get(url, { headers: auth.authData.headers, timeout: 15000 });
-                const rawData = res.data?.js?.data || res.data?.js || [];
-                const items = Array.isArray(rawData) ? rawData : Object.values(rawData);
-                return {
-                    metas: items.map(m => ({
-                        id: `xlv:${listIdx}:${m.id}:${encodeURIComponent(m.name || m.title)}`,
-                        name: m.name || m.title,
-                        type: type,
-                        poster: m.screenshot_uri || m.logo || "",
-                        posterShape: "poster"
-                    }))
-                };
-            }
+            const res = await axios.get(url, { headers: auth.authData.headers, timeout: 15000 });
+            const rawData = res.data?.js?.data || res.data?.js || [];
+            const items = Array.isArray(rawData) ? rawData : Object.values(rawData);
+
+            return {
+                metas: items.map(m => ({
+                    id: `xlv:${listIdx}:${m.id}:${encodeURIComponent(m.name || m.title)}`,
+                    name: m.name || m.title,
+                    type: type,
+                    poster: m.screenshot_uri || m.logo || "",
+                    posterShape: type === "tv" ? "square" : "poster"
+                }))
+            };
         } catch (e) { return { metas: [] }; }
-        return { metas: [] };
     }
 
     async getMeta(type, id, configBase64) {
@@ -116,42 +86,32 @@ class StalkerAddon {
         const parts = id.split(":");
         const listIdx = parseInt(parts[1]);
         const seriesId = parts[2];
-        const seriesName = decodeURIComponent(parts[3] || "Série");
+        const seriesName = decodeURIComponent(parts[3]);
         const lists = this.parseConfig(configBase64);
-        const config = lists[listIdx];
-        if (!config) return { meta: {} };
-        const auth = await this.authenticate(config);
-        if (!auth) return { meta: {} };
+        const auth = await this.authenticate(lists[listIdx]);
+        if (!auth) return { meta: { id, type, name: seriesName } };
+
         try {
             const url = `${auth.api}type=series&action=get_ordered_list&movie_id=${seriesId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             const res = await axios.get(url, { headers: auth.authData.headers, timeout: 15000 });
-            const rawData = res.data?.js?.data || res.data?.js || [];
-            const episodesData = Array.isArray(rawData) ? rawData : Object.values(rawData);
-            const videos = episodesData.map((ep, index) => {
-                const season = parseInt(ep.season) || 1;
-                const episodeNum = parseInt(ep.episode || ep.series) || (index + 1);
-                return {
-                    id: `xlv:${listIdx}:${encodeURIComponent(ep.cmd || ep.id)}:ep_${season}_${episodeNum}`,
-                    title: ep.name || `Episódio ${episodeNum}`,
-                    season: season,
-                    episode: episodeNum
-                };
-            });
+            const episodesData = res.data?.js?.data || res.data?.js || [];
+            const videos = (Array.isArray(episodesData) ? episodesData : Object.values(episodesData)).map((ep, index) => ({
+                id: `xlv:${listIdx}:${encodeURIComponent(ep.cmd || ep.id)}:ep_${ep.season || 1}_${ep.series || index + 1}`,
+                title: ep.name || `Episódio ${index + 1}`,
+                season: parseInt(ep.season) || 1,
+                episode: parseInt(ep.series || index + 1)
+            }));
             return { meta: { id, type: "series", name: seriesName, posterShape: "poster", videos } };
         } catch (e) { return { meta: { id, type, name: seriesName } }; }
     }
 
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":");
-        const listIdx = parts[1];
-        const contentId = parts[2];
         const protocol = host.includes("localhost") ? "http" : "https";
-        const lists = this.parseConfig(configBase64);
-        const listName = lists[listIdx]?.name || "XuloV Stalker Hub";
         return {
             streams: [{
-                name: listName,
-                url: `${protocol}://${host}/proxy/${encodeURIComponent(configBase64)}/${listIdx}/${contentId}?type=${type}`,
+                name: "XuloV Stream",
+                url: `${protocol}://${host}/proxy/${encodeURIComponent(configBase64)}/${parts[1]}/${parts[2]}?type=${type}`,
                 title: "▶️ Reproduzir",
                 behaviorHints: { notWebReady: true }
             }]

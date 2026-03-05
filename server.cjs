@@ -1,199 +1,73 @@
-const express = require("express");
-const cors = require("cors");
-const axios = require("axios");
-const http = require("http");
-const https = require("https");
-const addon = require("./addon.cjs");
-
-const PORT = process.env.PORT || 3000;
+const express = require('express');
+const axios = require('axios');
+const addon = require('./addon.cjs');
 const app = express();
+const path = require('path');
 
-app.use(cors());
 app.use((req, res, next) => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-  next();
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+    res.setHeader('Content-Type', 'application/json');
+    next();
 });
 
-// A Nova Página de Configuração (Gera o link Base64)
-app.get("/", (req, res) => res.redirect("/configure"));
-app.get("/configure", (req, res) => {
-    res.send(`
-        <!DOCTYPE html>
-        <html><head><title>XuloV Hub Config</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-            body { font-family: sans-serif; background: #0c0d19; color: white; padding: 20px; }
-            .container { max-width: 500px; margin: auto; }
-            .list-box { background: #1b1d30; padding: 20px; border-radius: 12px; margin-bottom: 20px; border-left: 5px solid #007bff; position: relative; }
-            h3 { margin-top: 0; color: #007bff; font-size: 16px; }
-            label { display: block; font-size: 11px; color: #888; margin-top: 8px; font-weight: bold; }
-            input, select { width: 100%; padding: 10px; margin: 4px 0; border-radius: 6px; border: 1px solid #333; background: #222; color: white; box-sizing: border-box; }
-            .remove-btn { position: absolute; top: 10px; right: 10px; color: #ff4444; cursor: pointer; font-size: 12px; font-weight: bold; }
-            .add-btn { background: #28a745; color: white; border: none; padding: 12px; width: 100%; border-radius: 8px; cursor: pointer; font-weight: bold; margin-bottom: 15px; }
-            .install-btn { background: #007bff; color: white; border: none; padding: 18px; width: 100%; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 18px; }
-            .advanced { display: none; background: #141526; padding: 10px; border-radius: 8px; margin-top: 10px; }
-            .adv-toggle { color: #007bff; font-size: 12px; cursor: pointer; text-decoration: underline; margin-top: 5px; display: block; }
-        </style></head>
-        <body>
-            <div class="container">
-                <h2 style="text-align:center">XuloV Stalker Hub</h2>
-                <div id="lists-container"></div>
-                <button class="add-btn" onclick="addList()">+ Adicionar Nova Lista (Máx 5)</button>
-                <button class="install-btn" onclick="install()">🚀 INSTALAR NO STREMIO</button>
-            </div>
-
-            <script>
-                let listCount = 0;
-
-                function addList() {
-                    if(listCount >= 5) return alert("Máximo de 5 listas atingido!");
-                    listCount++;
-                    const id = Date.now();
-                    const html = \`
-                        <div class="list-box" id="box-\${id}">
-                            <div class="remove-btn" onclick="removeList(\${id})">REMOVER</div>
-                            <h3>LISTA #\${listCount}</h3>
-                            <label>NOME DA LISTA</label>
-                            <input type="text" class="name" placeholder="Ex: IPTV Portugal">
-                            <label>URL PORTAL</label>
-                            <input type="text" class="url" placeholder="http://portal.com:8080/c/">
-                            <label>MAC ADDRESS</label>
-                            <input type="text" class="mac" placeholder="00:1A:79:XX:XX:XX">
-                            <label>BOX MODEL</label>
-                            <select class="model">
-                                <option value="MAG250">MAG 250</option>
-                                <option value="MAG254">MAG 254</option>
-                                <option value="MAG256">MAG 256</option>
-                                <option value="MAG322">MAG 322</option>
-                                <option value="MAG424">MAG 424</option>
-                                <option value="MAG522">MAG 522</option>
-                            </select>
-                            <span class="adv-toggle" onclick="toggleAdv(\${id})">Configurações Avançadas</span>
-                            <div class="advanced" id="adv-\${id}">
-                                <label>SERIAL NUMBER (SN)</label><input type="text" class="sn">
-                                <label>DEVICE ID 1</label><input type="text" class="id1">
-                                <label>DEVICE ID 2</label><input type="text" class="id2">
-                                <label>SIGNATURE</label><input type="text" class="sig">
-                            </div>
-                        </div>\`;
-                    document.getElementById('lists-container').insertAdjacentHTML('beforeend', html);
-                }
-
-                function removeList(id) {
-                    document.getElementById('box-'+id).remove();
-                    listCount--;
-                }
-
-                function toggleAdv(id) {
-                    const el = document.getElementById('adv-'+id);
-                    el.style.display = el.style.display === 'block' ? 'none' : 'block';
-                }
-
-                function install() {
-                    const boxes = document.querySelectorAll('.list-box');
-                    if(boxes.length === 0) return alert("Adiciona pelo menos uma lista!");
-
-                    const lists = Array.from(boxes).map(box => ({
-                        name: box.querySelector('.name').value.trim(),
-                        url: box.querySelector('.url').value.trim(),
-                        mac: box.querySelector('.mac').value.trim(),
-                        model: box.querySelector('.model').value,
-                        sn: box.querySelector('.sn').value.trim(),
-                        id1: box.querySelector('.id1').value.trim(),
-                        id2: box.querySelector('.id2').value.trim(),
-                        sig: box.querySelector('.sig').value.trim()
-                    }));
-
-                    const config = { lists };
-                    const b64 = btoa(JSON.stringify(config));
-                    window.location.href = "stremio://" + window.location.host + "/" + b64 + "/manifest.json";
-                }
-
-                addList(); // Inicia com uma lista
-            </script>
-        </body></html>
-    `);
+// Serve a página de configuração (index.html)
+app.use(express.static(path.join(__dirname, 'public')));
+app.get('/', (req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// ROTAS DO STREMIO
-app.get("/:config/manifest.json", async (req, res) => {
-    res.json(await addon.getManifest(req.params.config));
+// ROTA DO MANIFEST (A mais importante para instalar)
+app.get('/:config/manifest.json', async (req, res) => {
+    const manifest = await addon.getManifest(req.params.config);
+    res.json(manifest);
 });
 
-app.get("/:config/catalog/:type/:id/:extra?.json", async (req, res) => {
+// ROTA DO CATÁLOGO
+app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
     const { config, type, id, extra } = req.params;
-    let extraObj = {};
-    if (extra) {
-        extra.replace(".json", "").split("&").forEach(p => {
-            const [k, v] = p.split("=");
-            if (k && v) extraObj[k] = decodeURIComponent(v);
-        });
-    }
+    const extraObj = extra ? Object.fromEntries(new URLSearchParams(extra)) : {};
     res.json(await addon.getCatalog(type, id, extraObj, config));
 });
 
+// ROTA DO META (Séries)
 app.get('/:config/meta/:type/:id.json', async (req, res) => {
     const { config, type, id } = req.params;
-    try {
-        const meta = await addon.getMeta(type, id, config);
-        res.json(meta);
-    } catch (e) {
-        res.status(500).json({ meta: {} });
-    }
+    res.json(await addon.getMeta(type, id, config));
 });
 
-app.get("/:config/meta/:type/:id.json", (req, res) => {
-    const parts = req.params.id.split(":");
-    let channelName = parts.length >= 4 ? decodeURIComponent(parts[3]) : "Canal IPTV";
-    res.json({ meta: { id: req.params.id, type: "tv", name: channelName, posterShape: "square" } });
+// ROTA DO STREAM
+app.get('/:config/stream/:type/:id.json', async (req, res) => {
+    const { config, type, id } = req.params;
+    res.json(await addon.getStreams(type, id, config, req.get('host')));
 });
 
-app.get("/:config/stream/:type/:id.json", async (req, res) => {
-    const host = req.headers.host;
-    res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
-});
-
+// PROXY DE VÍDEO
 app.get('/proxy/:config/:listIdx/:channelId', async (req, res) => {
     const { config, listIdx, channelId } = req.params;
-    const type = req.query.type || 'tv'; 
-    
+    const type = req.query.type || 'tv';
     const lists = addon.parseConfig(config);
-    const list = lists[parseInt(listIdx)];
-    if (!list) return res.status(404).send("Lista não encontrada");
-
-    const auth = await addon.authenticate(list);
-    if (!auth) return res.status(401).send("Falha na autenticação");
+    const auth = await addon.authenticate(lists[parseInt(listIdx)]);
+    
+    if (!auth) return res.status(401).send("Erro Auth");
 
     try {
-        let action = 'create_link';
-        let param = '';
+        const action = type === 'movie' ? 'get_vod_uri' : 'create_link';
+        const param = type === 'movie' ? `id=${channelId}` : `cmd=${channelId.includes(' ') ? encodeURIComponent(channelId) : 'ffrt%20'+channelId}`;
         
-        // Cada tipo precisa de um pedido diferente ao Stalker
-        if (type === 'movie') {
-            action = 'get_vod_uri';
-            param = `id=${channelId}`;
-        } else if (type === 'series') {
-            action = 'create_link';
-            param = `cmd=${channelId}`; // Séries costumam vir com o comando completo
-        } else { // TV (Canais)
-            action = 'create_link';
-            param = `cmd=ffrt%20${channelId}`;
-        }
-        
-        const streamUrl = `${auth.api}type=itv&action=${action}&${param}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-        const streamRes = await axios.get(streamUrl, { headers: auth.authData.headers });
-        
-        let videoUrl = streamRes.data?.js?.cmd || streamRes.data?.js;
-        
-        if (videoUrl && videoUrl.includes("http")) {
-            videoUrl = videoUrl.replace(/ffrt /g, "").replace(/ffmpeg /g, "");
-            res.redirect(videoUrl);
+        const url = `${auth.api}type=itv&action=${action}&${param}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+        const streamRes = await axios.get(url, { headers: auth.authData.headers });
+        const videoUrl = streamRes.data?.js?.cmd || streamRes.data?.js;
+
+        if (videoUrl && typeof videoUrl === 'string') {
+            res.redirect(videoUrl.replace(/ffrt /g, "").replace(/ffmpeg /g, ""));
         } else {
-            res.status(500).send("Link de vídeo não disponível.");
+            res.status(500).send("Link indisponível");
         }
-    } catch (e) {
-        res.status(500).send("Erro no proxy.");
-    }
+    } catch (e) { res.status(500).send("Erro Proxy"); }
 });
 
-app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Tizen Addon Online na porta ${PORT}`));
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`Servidor ON na porta ${port}`));
+
