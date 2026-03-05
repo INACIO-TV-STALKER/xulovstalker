@@ -49,14 +49,17 @@ const addon = {
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
         const catalogs = await Promise.all(lists.map(async (l, i) => {
-            let genreOptions = ["Predefinido"];
+            let genreOptions = ["Predefinido"]; 
             const auth = await this.authenticate(l);
             if (auth) {
                 try {
                     const gUrl = auth.api + "type=itv&action=get_genres&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
                     const gRes = await axios.get(gUrl, { headers: auth.authData.headers, timeout: 5000 });
                     const genres = Array.isArray(gRes.data?.js) ? gRes.data.js : [];
-                    genreOptions = genreOptions.concat(genres.map(g => g.title).filter(Boolean));
+                    
+                    // CORREÇÃO 1: Adiciona géneros do portal e remove duplicados (ex: se já existir Predefinido ou All)
+                    const portalGenres = genres.map(g => g.title).filter(Boolean);
+                    genreOptions = [...new Set([...genreOptions, ...portalGenres])];
                 } catch (e) {}
             }
             return {
@@ -73,7 +76,7 @@ const addon = {
 
         return {
             id: "org.xulov.stalker.multi",
-            version: "3.1.5",
+            version: "3.1.6",
             name: "XuloV Stalker Hub",
             description: "Suporte para até 5 Portais Stalker - Géneros reais + streams em Render",
             resources: ["catalog", "stream", "meta"],
@@ -99,7 +102,10 @@ const addon = {
             var channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
 
             let filteredChannels = channels;
-            if (extra && extra.genre && extra.genre !== "Predefinido") {
+            
+            // CORREÇÃO 2: Se for "Predefinido" ou "All", ignora o filtro e mostra tudo
+            const selectedGenre = extra?.genre?.trim();
+            if (selectedGenre && selectedGenre !== "Predefinido" && selectedGenre !== "All") {
                 try {
                     const gUrl = auth.api + "type=itv&action=get_genres&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
                     const gRes = await axios.get(gUrl, { headers: auth.authData.headers, timeout: 5000 });
@@ -108,7 +114,8 @@ const addon = {
                     genres.forEach(g => {
                         if (g.title && g.id !== undefined) genreMap[g.title.trim()] = g.id;
                     });
-                    const genreId = genreMap[extra.genre.trim()];
+                    
+                    const genreId = genreMap[selectedGenre];
                     if (genreId !== undefined) {
                         filteredChannels = channels.filter(ch => String(ch.tv_genre_id || "") === String(genreId));
                     }
@@ -117,7 +124,6 @@ const addon = {
 
             return {
                 metas: filteredChannels.map(ch => ({
-                    // ERRO CORRIGIDO: Interpolação de string limpa
                     id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name)}`,
                     name: ch.name,
                     type: "tv",
@@ -127,6 +133,7 @@ const addon = {
             };
         } catch (e) { return { metas: [] }; }
     },
+
     async getStreams(type, id, configBase64, host) {
         console.log(`[STREAM] ID recebido: ${id}`);
 
