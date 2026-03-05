@@ -29,6 +29,7 @@ class StalkerAddon {
         const lists = this.parseConfig(configBase64);
         const catalogs = [];
 
+        // Lógica ultra-rápida: não consulta servidores aqui para não dar timeout na instalação
         lists.forEach((l, i) => {
             catalogs.push({
                 type: "tv",
@@ -42,7 +43,6 @@ class StalkerAddon {
                 name: `${l.name || 'Lista '+(i+1)} 🎬`,
                 extra: [{ name: "skip", isRequired: false }]
             });
-            // NOVO: Aba de Séries
             catalogs.push({
                 type: "series",
                 id: `stalker_ser_${i}`,
@@ -53,10 +53,10 @@ class StalkerAddon {
 
         return {
             id: "org.xulov.stalker.multi",
-            version: "3.7.2", // Versão atualizada
+            version: "3.8.0",
             name: "XuloV Stalker Hub",
             description: "Canais, Filmes e Séries - Completo",
-            resources: ["catalog", "stream", "meta"], // Importante ter o 'meta' aqui
+            resources: ["catalog", "stream", "meta"],
             types: ["tv", "movie", "series"],
             idPrefixes: ["xlv:"],
             catalogs: catalogs
@@ -89,17 +89,14 @@ class StalkerAddon {
                 };
             }
 
-            // Filmes E Séries usam paginação, mas "types" diferentes no portal
             if (type === "movie" || type === "series") {
                 const stalkerType = type === "movie" ? "vod" : "series";
                 const pageSize = 60;
                 const page = extra.skip ? Math.floor(extra.skip / pageSize) + 1 : 1;
                 const url = `${auth.api}type=${stalkerType}&action=get_ordered_list&p=${page}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                
                 const res = await axios.get(url, { headers: auth.authData.headers, timeout: 15000 });
                 const rawData = res.data?.js?.data || res.data?.js || [];
                 const items = Array.isArray(rawData) ? rawData : Object.values(rawData);
-
                 return {
                     metas: items.map(m => ({
                         id: `xlv:${listIdx}:${m.id}:${encodeURIComponent(m.name || m.title)}`,
@@ -110,60 +107,38 @@ class StalkerAddon {
                     }))
                 };
             }
-        } catch (e) { console.error("Erro catálogo:", e.message); }
+        } catch (e) { return { metas: [] }; }
         return { metas: [] };
     }
 
-    // NOVA FUNÇÃO: Para carregar os Episódios quando clicas numa Série!
     async getMeta(type, id, configBase64) {
-        // Se não for série, devolvemos o básico
         if (type !== "series") return { meta: { id, type } };
-
         const parts = id.split(":");
         const listIdx = parseInt(parts[1]);
         const seriesId = parts[2];
         const seriesName = decodeURIComponent(parts[3] || "Série");
-
         const lists = this.parseConfig(configBase64);
         const config = lists[listIdx];
         if (!config) return { meta: {} };
-
         const auth = await this.authenticate(config);
         if (!auth) return { meta: {} };
-
         try {
-            // Pede a lista de episódios daquela série específica
             const url = `${auth.api}type=series&action=get_ordered_list&movie_id=${seriesId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             const res = await axios.get(url, { headers: auth.authData.headers, timeout: 15000 });
             const rawData = res.data?.js?.data || res.data?.js || [];
             const episodesData = Array.isArray(rawData) ? rawData : Object.values(rawData);
-
-            // Transforma os episódios do Stalker para o formato que o Stremio entende
             const videos = episodesData.map((ep, index) => {
                 const season = parseInt(ep.season) || 1;
                 const episodeNum = parseInt(ep.episode || ep.series) || (index + 1);
-                const epCmd = ep.cmd || ep.id; // Comando para o video
-
                 return {
-                    id: `xlv:${listIdx}:${encodeURIComponent(epCmd)}:ep_${season}_${episodeNum}`,
+                    id: `xlv:${listIdx}:${encodeURIComponent(ep.cmd || ep.id)}:ep_${season}_${episodeNum}`,
                     title: ep.name || `Episódio ${episodeNum}`,
                     season: season,
                     episode: episodeNum
                 };
             });
-
-            return {
-                meta: {
-                    id: id,
-                    type: "series",
-                    name: seriesName,
-                    posterShape: "poster",
-                    videos: videos // Isto faz aparecer a grelha de temporadas/episódios!
-                }
-            };
-        } catch (e) {
-            return { meta: { id, type, name: seriesName } };
-        }
+            return { meta: { id, type: "series", name: seriesName, posterShape: "poster", videos } };
+        } catch (e) { return { meta: { id, type, name: seriesName } }; }
     }
 
     async getStreams(type, id, configBase64, host) {
@@ -173,7 +148,6 @@ class StalkerAddon {
         const protocol = host.includes("localhost") ? "http" : "https";
         const lists = this.parseConfig(configBase64);
         const listName = lists[listIdx]?.name || "XuloV Stalker Hub";
-
         return {
             streams: [{
                 name: listName,
