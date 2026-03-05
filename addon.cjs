@@ -31,7 +31,8 @@ const addon = {
     async authenticate(config) {
         if (!config || !config.url) return null;
         var authData = getStalkerAuth(config, null);
-        var baseUrl = config.url.trim().replace(/\/c\/?\( /, "").replace(/\/portal\.php\/? \)/, "");
+        // ERRO CORRIGIDO: Removidos os caracteres estranhos \( e \)
+        var baseUrl = config.url.trim().replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
         if (!baseUrl.endsWith('/')) baseUrl += '/';
         var url = baseUrl + "portal.php";
         try {
@@ -72,7 +73,7 @@ const addon = {
 
         return {
             id: "org.xulov.stalker.multi",
-            version: "3.1.4",
+            version: "3.1.5",
             name: "XuloV Stalker Hub",
             description: "Suporte para até 5 Portais Stalker - Géneros reais + streams em Render",
             resources: ["catalog", "stream", "meta"],
@@ -116,8 +117,8 @@ const addon = {
 
             return {
                 metas: filteredChannels.map(ch => ({
-                    // LINHA CRÍTICA - usa crases (`) aqui!
-                    id: `xlv:\( {listIdx}: \){ch.id}:${encodeURIComponent(ch.name)}`,
+                    // ERRO CORRIGIDO: Interpolação de string limpa
+                    id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name)}`,
                     name: ch.name,
                     type: "tv",
                     poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "",
@@ -127,7 +128,8 @@ const addon = {
         } catch (e) { return { metas: [] }; }
     },
 
-    async getStreams(type, id, configBase64) {
+    // ERRO CORRIGIDO: Passar o host, calcular qual é a lista e enviar para o proxy para a Tizen aceitar
+    async getStreams(type, id, configBase64, host) {
         console.log(`[STREAM] ID recebido: ${id}`);
 
         const parts = id.split(":");
@@ -141,41 +143,24 @@ const addon = {
             return { streams: [] };
         }
 
-        const lists = this.parseConfig(configBase64);
-        const config = lists[listIdx];
-        const auth = await this.authenticate(config);
-        if (!auth) {
-            console.error(`[STREAM] Autenticação falhou para lista ${listIdx}`);
-            return { streams: [] };
-        }
-
         const channelId = parts[2];
         const channelName = decodeURIComponent(parts[3] || "Canal");
+        
+        // Determina se é Render (https) ou Localhost (http)
+        const protocol = host.includes("localhost") ? "http" : "https";
+        
+        // Retorna o link que aponta para a rota "/proxy/" do server.cjs
+        const proxyUrl = `${protocol}://${host}/proxy/${encodeURIComponent(configBase64)}/${listIdx}/${channelId}`;
 
-        try {
-            const cmdRaw = `ffmpeg http://localhost/ch/${channelId}_`;
-            const cmd = encodeURIComponent(cmdRaw);
-            const sUrl = `\( {auth.api}type=itv&action=create_link&cmd= \){cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+        console.log(`[STREAM] ✅ Redirecionado para Proxy Tizen: ${proxyUrl}`);
 
-            const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 10000 });
-            let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || "";
-
-            if (streamUrl) {
-                streamUrl = streamUrl.replace(/^(ffmpeg|ffrt|rtmp)\s+/i, "").trim();
-                console.log(`[STREAM] ✅ URL encontrada: ${streamUrl}`);
-                return {
-                    streams: [{
-                        url: streamUrl,
-                        title: "▶️ " + channelName,
-                        behaviorHints: { notWebReady: true }
-                    }]
-                };
-            }
-        } catch (e) {
-            console.error(`[STREAM] Erro create_link:`, e.message);
-        }
-
-        return { streams: [] };
+        return {
+            streams: [{
+                url: proxyUrl,
+                title: "▶️ " + channelName,
+                behaviorHints: { notWebReady: true }
+            }]
+        };
     }
 };
 
