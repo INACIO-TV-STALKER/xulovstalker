@@ -72,9 +72,9 @@ const addon = {
 
         return {
             id: "org.xulov.stalker.multi",
-            version: "3.1.0",
+            version: "3.1.2",
             name: "XuloV Stalker Hub",
-            description: "Suporte para até 5 Portais Stalker - Géneros reais por servidor",
+            description: "Suporte para até 5 Portais Stalker - Géneros reais + Debug Render",
             resources: ["catalog", "stream", "meta"],
             types: ["tv"],
             idPrefixes: ["xlv:"],
@@ -97,17 +97,14 @@ const addon = {
             var rawData = res.data?.js?.data || res.data?.js || [];
             var channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
 
-            // FILTRO POR GÉNERO REAL
             let filteredChannels = channels;
             if (extra && extra.genre && extra.genre !== "Predefinido") {
                 try {
                     const gUrl = auth.api + "type=itv&action=get_genres&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
-                    const gRes = await axios.get(gUrl, { headers: auth.authData.headers, timeout: 5000 });
+                    const gRes = await axios.get(gUrl, { headers: authAuthData.headers, timeout: 5000 });
                     const genres = Array.isArray(gRes.data?.js) ? gRes.data.js : [];
                     const genreMap = {};
-                    genres.forEach(g => {
-                        if (g.title && g.id !== undefined) genreMap[g.title.trim()] = g.id;
-                    });
+                    genres.forEach(g => { if (g.title && g.id !== undefined) genreMap[g.title.trim()] = g.id; });
                     const genreId = genreMap[extra.genre.trim()];
                     if (genreId !== undefined) {
                         filteredChannels = channels.filter(ch => String(ch.tv_genre_id || "") === String(genreId));
@@ -126,7 +123,8 @@ const addon = {
             };
         } catch (e) { return { metas: [] }; }
     },
-async getStreams(type, id, configBase64) {
+
+    async getStreams(type, id, configBase64) {
         const parts = id.split(":");
         const listIdx = parseInt(parts[1]);
         const channelId = parts[2];
@@ -135,61 +133,54 @@ async getStreams(type, id, configBase64) {
         const lists = this.parseConfig(configBase64);
         const config = lists[listIdx];
         const auth = await this.authenticate(config);
-        if (!auth) return { streams: [] };
-
-        try {
-            // Alteração chave aqui: formato mais compatível com portais atuais
-            const cmdRaw = `ffmpeg http://localhost/ch/${channelId}_`;
-            const cmd = encodeURIComponent(cmdRaw);
-
-            const sUrl = `\( {auth.api}type=itv&action=create_link&cmd= \){cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
-
-            const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 8000 });
-
-            let jsData = linkRes.data?.js || {};
-            let streamUrl = jsData.cmd || "";
-
-            // Limpeza comum e remoção de prefixos que o Stremio não gosta
-            if (streamUrl) {
-                streamUrl = streamUrl
-                    .replace(/^ffmpeg\s+/, '')     // remove ffmpeg no início
-                    .replace(/^ffrt\s+/, '')       // remove ffrt se aparecer
-                    .replace(/^rtmp\s+/, '')       // por segurança
-                    .trim();
-
-                // Se for http/https, adiciona user-agent se necessário (muitos precisam)
-                if (streamUrl.startsWith('http')) {
-                    return { 
-                        streams: [{ 
-                            url: streamUrl,
-                            title: "▶️ " + channelName,
-                            behaviorHints: { 
-                                notWebReady: true,          // força player externo se for preciso
-                                proxyHeaders: {             // ajuda em alguns casos
-                                    request: { "User-Agent": "Lavf/58.29.100" }
-                                }
-                            }
-                        }] 
-                    };
-                }
-            }
-
-            // Se ainda não tiver, tenta fallback com o cmd sem ffmpeg
-            if (!streamUrl) {
-                const fallbackCmd = encodeURIComponent(`http://localhost/ch/${channelId}`);
-                const fallbackUrl = `\( {auth.api}type=itv&action=create_link&cmd= \){fallbackCmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
-                const fbRes = await axios.get(fallbackUrl, { headers: auth.authData.headers });
-                streamUrl = fbRes.data?.js?.cmd || "";
-                if (streamUrl) {
-                    streamUrl = streamUrl.replace(/^ffmpeg\s+/, '').trim();
-                }
-            }
-
-        } catch (e) {
-            console.error("Erro ao criar link:", e.message); // para debug (podes ver no terminal)
+        if (!auth) {
+            console.error(`[STREAM] Autenticação falhou para lista ${listIdx}`);
+            return { streams: [] };
         }
 
-        return { streams: streamUrl ? [{ url: streamUrl, title: "▶️ " + channelName }] : [] };
+        const cmdFormats = [
+            `ffrt http://localhost/ch/${channelId}`,           // original que funcionava localmente
+            `ffmpeg http://localhost/ch/${channelId}`,         // muito comum em portais 2025/2026
+            `ffmpeg http://localhost/ch/${channelId}_`,        // underline no final (funciona em muitos PT)
+            `http://localhost/ch/${channelId}`                 // sem prefixo
+        ];
+
+        for (let i = 0; i < cmdFormats.length; i++) {
+            const cmdRaw = cmdFormats[i];
+            console.log(`[STREAM] Tentativa ${i+1} - cmd: ${cmdRaw}`);
+
+            try {
+                const cmd = encodeURIComponent(cmdRaw);
+                const sUrl = `\( {auth.api}type=itv&action=create_link&cmd= \){cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+
+                const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 10000 });
+                const responseData = linkRes.data?.js || linkRes.data || {};
+
+                console.log(`[STREAM] CREATE_LINK RESPONSE (tentativa ${i+1}):`, JSON.stringify(responseData, null, 2));
+
+                let streamUrl = responseData.cmd || responseData || "";
+
+                if (streamUrl && typeof streamUrl === "string") {
+                    streamUrl = streamUrl.replace(/^(ffmpeg|ffrt|rtmp)\s+/i, "").trim();
+
+                    if (streamUrl.startsWith("http") || streamUrl.startsWith("rtmp")) {
+                        console.log(`[STREAM] ✅ Sucesso! URL encontrada: ${streamUrl}`);
+                        return {
+                            streams: [{
+                                url: streamUrl,
+                                title: "▶️ " + channelName,
+                                behaviorHints: { notWebReady: true }
+                            }]
+                        };
+                    }
+                }
+            } catch (e) {
+                console.error(`[STREAM] Erro na tentativa ${i+1}:`, e.message);
+            }
+        }
+
+        console.error(`[STREAM] ❌ Todas as tentativas falharam para canal ${channelId}`);
+        return { streams: [] };
     }
 };
 
