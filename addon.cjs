@@ -72,9 +72,9 @@ const addon = {
 
         return {
             id: "org.xulov.stalker.multi",
-            version: "3.1.2",
+            version: "3.1.3",
             name: "XuloV Stalker Hub",
-            description: "Suporte para até 5 Portais Stalker - Géneros reais + Debug Render",
+            description: "Suporte para até 5 Portais Stalker - Géneros reais + streams em Render",
             resources: ["catalog", "stream", "meta"],
             types: ["tv"],
             idPrefixes: ["xlv:"],
@@ -101,10 +101,12 @@ const addon = {
             if (extra && extra.genre && extra.genre !== "Predefinido") {
                 try {
                     const gUrl = auth.api + "type=itv&action=get_genres&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
-                    const gRes = await axios.get(gUrl, { headers: authAuthData.headers, timeout: 5000 });
+                    const gRes = await axios.get(gUrl, { headers: auth.authData.headers, timeout: 5000 });
                     const genres = Array.isArray(gRes.data?.js) ? gRes.data.js : [];
                     const genreMap = {};
-                    genres.forEach(g => { if (g.title && g.id !== undefined) genreMap[g.title.trim()] = g.id; });
+                    genres.forEach(g => {
+                        if (g.title && g.id !== undefined) genreMap[g.title.trim()] = g.id;
+                    });
                     const genreId = genreMap[extra.genre.trim()];
                     if (genreId !== undefined) {
                         filteredChannels = channels.filter(ch => String(ch.tv_genre_id || "") === String(genreId));
@@ -125,10 +127,20 @@ const addon = {
     },
 
     async getStreams(type, id, configBase64) {
+        console.log(`[STREAM] ID recebido: ${id}`);
+
         const parts = id.split(":");
-        const listIdx = parseInt(parts[1]);
-        const channelId = parts[2];
-        const channelName = decodeURIComponent(parts[3] || "Canal");
+        let listIdx = NaN;
+        if (parts[0] === "xlv" && parts.length >= 3) {
+            listIdx = parseInt(parts[1]);
+        }
+
+        if (isNaN(listIdx)) {
+            console.error(`[STREAM] ❌ ID inválido (NaN) - formato antigo ou cache. ID: ${id}`);
+            return { streams: [] };
+        }
+
+        console.log(`[STREAM] Lista detectada: ${listIdx}`);
 
         const lists = this.parseConfig(configBase64);
         const config = lists[listIdx];
@@ -138,48 +150,32 @@ const addon = {
             return { streams: [] };
         }
 
-        const cmdFormats = [
-            `ffrt http://localhost/ch/${channelId}`,           // original que funcionava localmente
-            `ffmpeg http://localhost/ch/${channelId}`,         // muito comum em portais 2025/2026
-            `ffmpeg http://localhost/ch/${channelId}_`,        // underline no final (funciona em muitos PT)
-            `http://localhost/ch/${channelId}`                 // sem prefixo
-        ];
+        const channelId = parts[2];
+        const channelName = decodeURIComponent(parts[3] || "Canal");
 
-        for (let i = 0; i < cmdFormats.length; i++) {
-            const cmdRaw = cmdFormats[i];
-            console.log(`[STREAM] Tentativa ${i+1} - cmd: ${cmdRaw}`);
+        try {
+            const cmdRaw = `ffmpeg http://localhost/ch/${channelId}_`;
+            const cmd = encodeURIComponent(cmdRaw);
+            const sUrl = `\( {auth.api}type=itv&action=create_link&cmd= \){cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
 
-            try {
-                const cmd = encodeURIComponent(cmdRaw);
-                const sUrl = `\( {auth.api}type=itv&action=create_link&cmd= \){cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+            const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 10000 });
+            let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || "";
 
-                const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 10000 });
-                const responseData = linkRes.data?.js || linkRes.data || {};
-
-                console.log(`[STREAM] CREATE_LINK RESPONSE (tentativa ${i+1}):`, JSON.stringify(responseData, null, 2));
-
-                let streamUrl = responseData.cmd || responseData || "";
-
-                if (streamUrl && typeof streamUrl === "string") {
-                    streamUrl = streamUrl.replace(/^(ffmpeg|ffrt|rtmp)\s+/i, "").trim();
-
-                    if (streamUrl.startsWith("http") || streamUrl.startsWith("rtmp")) {
-                        console.log(`[STREAM] ✅ Sucesso! URL encontrada: ${streamUrl}`);
-                        return {
-                            streams: [{
-                                url: streamUrl,
-                                title: "▶️ " + channelName,
-                                behaviorHints: { notWebReady: true }
-                            }]
-                        };
-                    }
-                }
-            } catch (e) {
-                console.error(`[STREAM] Erro na tentativa ${i+1}:`, e.message);
+            if (streamUrl) {
+                streamUrl = streamUrl.replace(/^(ffmpeg|ffrt|rtmp)\s+/i, "").trim();
+                console.log(`[STREAM] ✅ URL encontrada: ${streamUrl}`);
+                return {
+                    streams: [{
+                        url: streamUrl,
+                        title: "▶️ " + channelName,
+                        behaviorHints: { notWebReady: true }
+                    }]
+                };
             }
+        } catch (e) {
+            console.error(`[STREAM] Erro create_link:`, e.message);
         }
 
-        console.error(`[STREAM] ❌ Todas as tentativas falharam para canal ${channelId}`);
         return { streams: [] };
     }
 };
