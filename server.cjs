@@ -14,7 +14,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// A Nova Página de Configuração (Gera o link Base64)
+// A Nova Página de Configuração (Gera o link Base64) - INTACTA
 app.get("/", (req, res) => res.redirect("/configure"));
 app.get("/configure", (req, res) => {
     res.send(`
@@ -109,7 +109,7 @@ app.get("/configure", (req, res) => {
                     window.location.href = "stremio://" + window.location.host + "/" + b64 + "/manifest.json";
                 }
 
-                addList(); // Inicia com uma lista
+                addList(); 
             </script>
         </body></html>
     `);
@@ -132,10 +132,9 @@ app.get("/:config/catalog/:type/:id/:extra?.json", async (req, res) => {
     res.json(await addon.getCatalog(type, id, extraObj, config));
 });
 
-app.get("/:config/meta/:type/:id.json", (req, res) => {
-    const parts = req.params.id.split(":");
-    let channelName = parts.length >= 4 ? decodeURIComponent(parts[3]) : "Canal IPTV";
-    res.json({ meta: { id: req.params.id, type: "tv", name: channelName, posterShape: "square" } });
+// ADICIONADO: Agora a rota Meta chama a função do addon para carregar episódios de Séries
+app.get("/:config/meta/:type/:id.json", async (req, res) => {
+    res.json(await addon.getMeta(req.params.type, req.params.id, req.params.config));
 });
 
 app.get("/:config/stream/:type/:id.json", async (req, res) => {
@@ -143,29 +142,36 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
 
-// O SEGREDO PARA A TIZEN TV (Faz o pipe do vídeo com cabeçalhos corretos)
-// ERRO CORRIGIDO: Adicionado o :listIdx na rota para o proxy saber que lista da Array deve autenticar
+// O SEGREDO PARA A TIZEN TV - ADICIONADO: Suporte para VOD (Filmes/Séries)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
+    const type = req.query.type || 'tv'; // Apanha o type (tv, movie, series)
 
-    // Agora o proxy sabe extrair a lista certa do Array
     const lists = addon.parseConfig(config);
     const configData = lists[listIdx];
     if (!configData) return res.status(400).end();
 
-    // ERRO CORRIGIDO: authenticate recebe 1 argumento (o config), não 2.
     const auth = await addon.authenticate(configData);
     if (!auth) return res.status(401).end();
 
     try {
-        const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
-        const sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
-        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
+        let sUrl = "";
+        
+        // Se for filme ou série, o Stalker pede como 'vod' e enviamos o cmd recebido
+        if (type === "movie" || type === "series") {
+            sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(channelId)}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+        } else {
+            // LÓGICA DE TV ORIGINAL INTACTA
+            const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
+            sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+        }
 
+        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
         let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
+        
         if (typeof streamUrl === 'string') {
             const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-            console.log(`[PROXY] Tizen TV a pedir canal ${channelId} da lista ${listIdx}...`);
+            console.log(`[PROXY] Tizen a pedir ${type} ID ${channelId} da lista ${listIdx}...`);
 
             try {
                 const videoResponse = await axios({
@@ -178,8 +184,6 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
                 res.setHeader("Access-Control-Allow-Origin", "*");
                 res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp2t");
-
-                // Envia o fluxo de vídeo para a TV
                 videoResponse.data.pipe(res);
 
             } catch (vidErr) {
@@ -196,3 +200,4 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 });
 
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Tizen Addon Online na porta ${PORT}`));
+
