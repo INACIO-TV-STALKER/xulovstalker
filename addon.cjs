@@ -53,7 +53,7 @@ class StalkerAddon {
 
         return {
             id: "org.xulov.stalker.multi",
-            version: "3.7.0", // Versão atualizada
+            version: "3.7.2", // Versão atualizada
             name: "XuloV Stalker Hub",
             description: "Canais, Filmes e Séries - Completo",
             resources: ["catalog", "stream", "meta"], // Importante ter o 'meta' aqui
