@@ -185,5 +185,5 @@ class StalkerAddon {
     }
 }
 
-module.exports = StalkerAddon;
+module.exports = new StalkerAddon();
 
