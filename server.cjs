@@ -144,12 +144,17 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
 });
 
 // O SEGREDO PARA A TIZEN TV (Faz o pipe do vídeo com cabeçalhos corretos)
-app.get("/proxy/:config/:channelId", async (req, res) => {
-    const { config, channelId } = req.params;
-    const configData = addon.parseConfig(config);
+// ERRO CORRIGIDO: Adicionado o :listIdx na rota para o proxy saber que lista da Array deve autenticar
+app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
+    const { config, listIdx, channelId } = req.params;
+
+    // Agora o proxy sabe extrair a lista certa do Array
+    const lists = addon.parseConfig(config);
+    const configData = lists[listIdx];
     if (!configData) return res.status(400).end();
 
-    const auth = await addon.authenticate(configData.url, configData);
+    // ERRO CORRIGIDO: authenticate recebe 1 argumento (o config), não 2.
+    const auth = await addon.authenticate(configData);
     if (!auth) return res.status(401).end();
 
     try {
@@ -160,20 +165,18 @@ app.get("/proxy/:config/:channelId", async (req, res) => {
         let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
         if (typeof streamUrl === 'string') {
             const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-            console.log(`[PROXY] Tizen TV a pedir canal ${channelId}...`);
+            console.log(`[PROXY] Tizen TV a pedir canal ${channelId} da lista ${listIdx}...`);
 
-            // NOVA LÓGICA DE VÍDEO: O Axios segue redirecionamentos (302) automaticamente!
             try {
                 const videoResponse = await axios({
                     method: 'get',
                     url: finalUrl,
                     headers: auth.authData.headers,
-                    responseType: 'stream', // Fundamental para não rebentar a memória do Render
+                    responseType: 'stream',
                     maxRedirects: 5
                 });
 
                 res.setHeader("Access-Control-Allow-Origin", "*");
-                // Em vez de forçar um formato, deixamos o portal ditar o tipo correto (HLS ou TS)
                 res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp2t");
 
                 // Envia o fluxo de vídeo para a TV

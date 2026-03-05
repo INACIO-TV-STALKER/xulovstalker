@@ -45,89 +45,88 @@ const addon = {
             }
         } catch (e) { return null; }
     },
+
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
-        const catalogs = [];
-
-        lists.forEach((l, i) => {
-            // Catálogo de TV (Canais)
-            catalogs.push({
+        const catalogs = await Promise.all(lists.map(async (l, i) => {
+            let genreOptions = ["Predefinido"];
+            const auth = await this.authenticate(l);
+            if (auth) {
+                try {
+                    const gUrl = auth.api + "type=itv&action=get_genres&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
+                    const gRes = await axios.get(gUrl, { headers: auth.authData.headers, timeout: 5000 });
+                    const genres = Array.isArray(gRes.data?.js) ? gRes.data.js : [];
+                    genreOptions = genreOptions.concat(genres.map(g => g.title).filter(Boolean));
+                } catch (e) {}
+            }
+            return {
                 type: "tv",
-                id: `stalker_tv_${i}`,
-                name: `${l.name || 'Lista '+(i+1)} - Canais`,
-                extra: [{ name: "genre", isRequired: false }]
-            });
-            // NOVO: Catálogo de Filmes
-            catalogs.push({
-                type: "movie",
-                id: `stalker_mov_${i}`,
-                name: `${l.name || 'Lista '+(i+1)} - Filmes`,
-                extra: [{ name: "skip", isRequired: false }] // Ativa a paginação
-            });
-        });
+                id: "stalker_cat_" + i,
+                name: l.name || ("Lista " + (i + 1)),
+                extra: [{
+                    name: "genre",
+                    isRequired: false,
+                    options: genreOptions
+                }]
+            };
+        }));
 
         return {
             id: "org.xulov.stalker.multi",
-            version: "3.2.0", // Versão nova para limpar a cache!
+            version: "3.1.5",
             name: "XuloV Stalker Hub",
-            description: "Canais, Filmes e Séries com Paginação",
+            description: "Suporte para até 5 Portais Stalker - Géneros reais + streams em Render",
             resources: ["catalog", "stream", "meta"],
-            types: ["tv", "movie", "series"],
+            types: ["tv"],
             idPrefixes: ["xlv:"],
             catalogs: catalogs
         };
     },
 
     async getCatalog(type, id, extra, configBase64) {
-        const listIdx = parseInt(id.split("_").pop());
         const lists = this.parseConfig(configBase64);
+        const listIdx = parseInt(id.replace("stalker_cat_", ""));
         const config = lists[listIdx];
         if (!config) return { metas: [] };
 
         const auth = await this.authenticate(config);
         if (!auth) return { metas: [] };
 
-        // Define a ação com base no tipo (itv para canais, vod para filmes)
-        let action = "get_all_channels";
-        let stalkerType = "itv";
-        
-        if (type === "movie") {
-            action = "get_ordered_list"; // Ação padrão para VOD no Stalker
-            stalkerType = "vod";
-        }
-
-        // PAGINAÇÃO: O Stremio envia 'skip' (0, 100, 200...). O Stalker costuma usar páginas.
-        const pageSize = 100;
-        const page = extra.skip ? Math.floor(extra.skip / pageSize) + 1 : 1;
-
         try {
-            let url = `${auth.api}type=${stalkerType}&action=${action}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-            
-            // Se for filme, adicionamos filtros de página para não sobrecarregar
-            if (type === "movie") {
-                url += `&p=${page}`; 
+            var url = auth.api + "type=itv&action=get_all_channels&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
+            var res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
+            var rawData = res.data?.js?.data || res.data?.js || [];
+            var channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
+
+            let filteredChannels = channels;
+            if (extra && extra.genre && extra.genre !== "Predefinido") {
+                try {
+                    const gUrl = auth.api + "type=itv&action=get_genres&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
+                    const gRes = await axios.get(gUrl, { headers: auth.authData.headers, timeout: 5000 });
+                    const genres = Array.isArray(gRes.data?.js) ? gRes.data.js : [];
+                    const genreMap = {};
+                    genres.forEach(g => {
+                        if (g.title && g.id !== undefined) genreMap[g.title.trim()] = g.id;
+                    });
+                    const genreId = genreMap[extra.genre.trim()];
+                    if (genreId !== undefined) {
+                        filteredChannels = channels.filter(ch => String(ch.tv_genre_id || "") === String(genreId));
+                    }
+                } catch (e) {}
             }
 
-            const res = await axios.get(url, { headers: auth.authData.headers, timeout: 15000 });
-            const rawData = res.data?.js?.data || res.data?.js || [];
-            const items = Array.isArray(rawData) ? rawData : Object.values(rawData);
-
             return {
-                metas: items.map(item => ({
-                    id: `xlv:${listIdx}:${item.id}:${encodeURIComponent(item.name || item.title)}`,
-                    name: item.name || item.title,
-                    type: type,
-                    poster: item.screenshot_uri || item.logo || "",
-                    posterShape: type === "tv" ? "square" : "poster",
-                    description: item.description || ""
+                metas: filteredChannels.map(ch => ({
+                    // ERRO CORRIGIDO: Interpolação de string limpa
+                    id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name)}`,
+                    name: ch.name,
+                    type: "tv",
+                    poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "",
+                    posterShape: "square"
                 }))
             };
-        } catch (e) { 
-            console.error("Erro no catálogo:", e.message);
-            return { metas: [] }; 
-        }
+        } catch (e) { return { metas: [] }; }
     },
-
     async getStreams(type, id, configBase64, host) {
         console.log(`[STREAM] ID recebido: ${id}`);
 
