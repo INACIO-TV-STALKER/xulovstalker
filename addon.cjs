@@ -4,9 +4,7 @@ class StalkerAddon {
     parseConfig(configBase64) {
         try {
             return JSON.parse(Buffer.from(configBase64, 'base64').toString());
-        } catch (e) {
-            return [];
-        }
+        } catch (e) { return []; }
     }
 
     async authenticate(config) {
@@ -19,58 +17,38 @@ class StalkerAddon {
                 "Cookie": `mac=${encodeURIComponent(mac)}; stb_lang=en; timezone=Europe/Lisbon;`
             }
         };
-
         try {
             const res = await axios.get(`${api}type=stb&action=handshake&JsHttpRequest=1-0`, { headers: authData.headers, timeout: 5000 });
             const token = res.data?.js?.token;
             if (!token) return null;
-
-            const profileRes = await axios.get(`${api}type=stb&action=get_profile&token=${token}&JsHttpRequest=1-0`, { headers: authData.headers, timeout: 5000 });
-            return { api, token, authData, profile: profileRes.data?.js };
-        } catch (e) {
-            return null;
-        }
+            return { api, token, authData };
+        } catch (e) { return null; }
     }
 
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
         const catalogs = [];
 
-        for (let i = 0; i < lists.length; i++) {
-            const l = lists[i];
-            let genreOptions = ["Predefinido"];
-            
-            // Tenta buscar os géneros reais para o menu aparecer
-            const auth = await this.authenticate(l);
-            if (auth) {
-                try {
-                    const gUrl = `${auth.api}type=itv&action=get_genres&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                    const gRes = await axios.get(gUrl, { headers: auth.authData.headers, timeout: 5000 });
-                    const genres = Array.isArray(gRes.data?.js) ? gRes.data.js : [];
-                    genres.forEach(g => { if (g.title) genreOptions.push(g.title); });
-                } catch (e) {}
-            }
-
+        lists.forEach((l, i) => {
             catalogs.push({
                 type: "tv",
                 id: `stalker_tv_${i}`,
                 name: `${l.name || 'Lista '+(i+1)} 📺`,
-                extra: [{ name: "genre", options: genreOptions, isRequired: false }]
+                extra: [{ name: "genre", isRequired: false }] // Removido o carregamento prévio de géneros
             });
-
             catalogs.push({
                 type: "movie",
                 id: `stalker_mov_${i}`,
                 name: `${l.name || 'Lista '+(i+1)} 🎬`,
                 extra: [{ name: "skip", isRequired: false }]
             });
-        }
+        });
 
         return {
             id: "org.xulov.stalker.multi",
-            version: "3.5.0",
+            version: "3.6.0",
             name: "XuloV Stalker Hub",
-            description: "Canais e Filmes - Full Support",
+            description: "Canais e Filmes - Otimizado",
             resources: ["catalog", "stream", "meta"],
             types: ["tv", "movie"],
             idPrefixes: ["xlv:"],
@@ -93,17 +71,6 @@ class StalkerAddon {
                 const res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
                 const rawData = res.data?.js?.data || res.data?.js || [];
                 let channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
-
-                const selectedGenre = extra?.genre;
-                if (selectedGenre && selectedGenre !== "Predefinido") {
-                    const gUrl = `${auth.api}type=itv&action=get_genres&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                    const gRes = await axios.get(gUrl, { headers: auth.authData.headers });
-                    const genres = Array.isArray(gRes.data?.js) ? gRes.data.js : [];
-                    const genreObj = genres.find(g => g.title === selectedGenre);
-                    if (genreObj) {
-                        channels = channels.filter(ch => String(ch.tv_genre_id) === String(genreObj.id));
-                    }
-                }
 
                 return {
                     metas: channels.map(ch => ({
@@ -134,29 +101,23 @@ class StalkerAddon {
                     }))
                 };
             }
-        } catch (e) {
-            console.error("Erro no catálogo:", e.message);
-        }
+        } catch (e) { console.error("Erro catálogo:", e.message); }
         return { metas: [] };
     }
 
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":");
-        const listIdx = parseInt(parts[1]);
+        const listIdx = parts[1];
         const contentId = parts[2];
-        const contentName = decodeURIComponent(parts[3] || "Conteúdo");
-
+        const contentName = decodeURIComponent(parts[3]);
+        const protocol = host.includes("localhost") ? "http" : "https";
         const lists = this.parseConfig(configBase64);
         const listName = lists[listIdx]?.name || "XuloV Stalker Hub";
-        
-        const protocol = host.includes("localhost") ? "http" : "https";
-        // Adicionamos o tipo no final para o proxy saber o que fazer
-        const proxyUrl = `${protocol}://${host}/proxy/${encodeURIComponent(configBase64)}/${listIdx}/${contentId}?type=${type}`;
 
         return {
             streams: [{
                 name: listName,
-                url: proxyUrl,
+                url: `${protocol}://${host}/proxy/${encodeURIComponent(configBase64)}/${listIdx}/${contentId}?type=${type}`,
                 title: "▶️ " + contentName,
                 behaviorHints: { notWebReady: true }
             }]
