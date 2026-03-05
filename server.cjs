@@ -143,9 +143,10 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
 });
 
 // O SEGREDO PARA A TIZEN TV - ADICIONADO: Suporte para VOD (Filmes/Séries)
+// PROXY DE VÍDEO (Corrigido para Filmes e Séries)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
-    const type = req.query.type || 'tv'; // Apanha o type (tv, movie, series)
+    const type = req.query.type || 'tv';
 
     const lists = addon.parseConfig(config);
     const configData = lists[listIdx];
@@ -157,44 +158,46 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     try {
         let sUrl = "";
         
-        // Se for filme ou série, o Stalker pede como 'vod' e enviamos o cmd recebido
+        // DIFERENCIAÇÃO DE ROTA:
         if (type === "movie" || type === "series") {
-            sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(channelId)}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+            // Para Filmes e Séries, a ação correta no Stalker costuma ser 'get_vod_uri' ou 'create_link' com o ID simples
+            // Se o channelId já for um link (contém / ou .), enviamos como cmd, se for só número, enviamos como item
+            const action = channelId.includes("/") ? "create_link" : "get_vod_uri";
+            const param = channelId.includes("/") ? `cmd=${encodeURIComponent(channelId)}` : `id=${channelId}`;
+            sUrl = `${auth.api}type=vod&action=${action}&${param}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
         } else {
-            // LÓGICA DE TV ORIGINAL INTACTA
+            // LÓGICA DE TV ORIGINAL (MANTIDA)
             const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
-            sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+            sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
         }
 
         const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
-        let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
+        let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.js?.data;
         
         if (typeof streamUrl === 'string') {
+            // Limpa lixo do link (ffrt, ffmpeg, etc)
             const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-            console.log(`[PROXY] Tizen a pedir ${type} ID ${channelId} da lista ${listIdx}...`);
+            console.log(`[PROXY] A reproduzir ${type}: ${finalUrl}`);
 
-            try {
-                const videoResponse = await axios({
-                    method: 'get',
-                    url: finalUrl,
-                    headers: auth.authData.headers,
-                    responseType: 'stream',
-                    maxRedirects: 5
-                });
+            // Pipe do vídeo para a TV
+            const videoResponse = await axios({
+                method: 'get',
+                url: finalUrl,
+                headers: auth.authData.headers,
+                responseType: 'stream',
+                maxRedirects: 5
+            });
 
-                res.setHeader("Access-Control-Allow-Origin", "*");
-                res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp2t");
-                videoResponse.data.pipe(res);
-
-            } catch (vidErr) {
-                console.log("Erro no stream:", vidErr.message);
-                res.status(500).end();
-            }
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp4");
+            videoResponse.data.pipe(res);
 
         } else {
+            console.log("Stalker não devolveu link válido:", linkRes.data);
             res.status(404).end();
         }
     } catch (e) {
+        console.error("Erro no Proxy:", e.message);
         res.status(500).end();
     }
 });
