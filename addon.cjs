@@ -45,20 +45,22 @@ const addon = {
             }
         } catch (e) { return null; }
     },
+                };
+            } catch (e) { return { metas: [] }; }
+        }
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
         const catalogs = [];
 
         lists.forEach((l, i) => {
-            // CATALOGO TV: Mantemos exatamente como estava
+            // CATALOGO TV (Com géneros)
             catalogs.push({
                 type: "tv",
                 id: `stalker_tv_${i}`,
                 name: `${l.name || 'Lista '+(i+1)} 📺`,
                 extra: [{ name: "genre", isRequired: false }]
             });
-
-            // CATALOGO FILMES: Novo, separado, com paginação
+            // CATALOGO FILMES (Com paginação)
             catalogs.push({
                 type: "movie",
                 id: `stalker_mov_${i}`,
@@ -69,9 +71,9 @@ const addon = {
 
         return {
             id: "org.xulov.stalker.multi",
-            version: "3.3.0", // Versão nova para o Stremio reconhecer as abas
+            version: "3.4.0", // Versão nova para forçar limpeza de cache
             name: "XuloV Stalker Hub",
-            description: "Canais e Filmes - Estável",
+            description: "Canais e Filmes - Versão Estável 100%",
             resources: ["catalog", "stream", "meta"],
             types: ["tv", "movie"],
             idPrefixes: ["xlv:"],
@@ -88,8 +90,7 @@ const addon = {
         const auth = await this.authenticate(config);
         if (!auth) return { metas: [] };
 
-        // --- CAMINHO A: SE FOR TV (CANAIS) ---
-        // Mantemos a lógica que já está a funcionar 100%
+        // --- LÓGICA PARA TV (CANAIS) ---
         if (type === "tv") {
             try {
                 const url = `${auth.api}type=itv&action=get_all_channels&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
@@ -99,10 +100,16 @@ const addon = {
 
                 let filtered = channels;
                 const selectedGenre = extra?.genre?.trim();
-                
+
+                // RECUPERAÇÃO DOS GÉNEROS (Para aparecerem no menu)
                 if (selectedGenre && selectedGenre !== "Predefinido") {
-                    // (Lógica de géneros que já tinhas aqui...)
-                    // Para encurtar o código aqui, podes manter a tua lógica de filtros de género
+                    const gUrl = `${auth.api}type=itv&action=get_genres&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                    const gRes = await axios.get(gUrl, { headers: auth.authData.headers });
+                    const genres = Array.isArray(gRes.data?.js) ? gRes.data.js : [];
+                    const genreId = genres.find(g => g.title === selectedGenre)?.id;
+                    if (genreId) {
+                        filtered = channels.filter(ch => String(ch.tv_genre_id) === String(genreId));
+                    }
                 }
 
                 return {
@@ -117,16 +124,13 @@ const addon = {
             } catch (e) { return { metas: [] }; }
         }
 
-        // --- CAMINHO B: SE FOR MOVIE (FILMES) ---
-        // Lógica nova com paginação para não crashar o Render
+        // --- LÓGICA PARA FILMES ---
         if (type === "movie") {
             try {
-                const pageSize = 60; // Carrega 60 de cada vez (rápido)
+                const pageSize = 60;
                 const page = extra.skip ? Math.floor(extra.skip / pageSize) + 1 : 1;
-                
                 const url = `${auth.api}type=vod&action=get_ordered_list&p=${page}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                 const res = await axios.get(url, { headers: auth.authData.headers, timeout: 15000 });
-                
                 const rawData = res.data?.js?.data || res.data?.js || [];
                 const movies = Array.isArray(rawData) ? rawData : Object.values(rawData);
 
@@ -136,49 +140,35 @@ const addon = {
                         name: m.name || m.title,
                         type: "movie",
                         poster: m.screenshot_uri || "",
-                        posterShape: "poster",
-                        description: m.description || ""
+                        posterShape: "poster"
                     }))
                 };
             } catch (e) { return { metas: [] }; }
         }
-
         return { metas: [] };
     },
 
     async getStreams(type, id, configBase64, host) {
-        console.log(`[STREAM] ID recebido: ${id}`);
-
         const parts = id.split(":");
-        let listIdx = NaN;
-        if (parts[0] === "xlv" && parts.length >= 3) {
-            listIdx = parseInt(parts[1]);
-        }
-
-        if (isNaN(listIdx)) {
-            console.error(`[STREAM] ❌ ID inválido (NaN) - formato antigo ou cache. ID: ${id}`);
-            return { streams: [] };
-        }
-
+        const listIdx = parseInt(parts[1]);
         const channelId = parts[2];
-        const channelName = decodeURIComponent(parts[3] || "Canal");
-        
-        // Determina se é Render (https) ou Localhost (http)
-        const protocol = host.includes("localhost") ? "http" : "https";
-        
-        // Retorna o link que aponta para a rota "/proxy/" do server.cjs
-        const proxyUrl = `${protocol}://${host}/proxy/${encodeURIComponent(configBase64)}/${listIdx}/${channelId}`;
+        const channelName = decodeURIComponent(parts[3] || "Conteúdo");
 
-        console.log(`[STREAM] ✅ Redirecionado para Proxy Tizen: ${proxyUrl}`);
-
-        // --- A MAGIA ACONTECE AQUI ---
-        // Vamos buscar o nome que deste à lista na página de configuração
         const lists = this.parseConfig(configBase64);
         const listName = lists[listIdx]?.name || "XuloV Stalker Hub";
+        
+        // CORREÇÃO DOS FILMES: Se o tipo for movie, usamos 'get_vod_uri', se for tv usamos 'create_link'
+        const action = (type === "movie") ? "get_vod_uri" : "create_link";
+        const paramName = (type === "movie") ? "id" : "cmd";
+        const paramValue = (type === "movie") ? channelId : `ffrt%20${channelId}`;
+
+        const protocol = host.includes("localhost") ? "http" : "https";
+        // Vamos criar uma rota de proxy que entenda se é filme ou TV
+        const proxyUrl = `${protocol}://${host}/proxy/${encodeURIComponent(configBase64)}/${listIdx}/${channelId}?type=${type}`;
 
         return {
             streams: [{
-                name: listName,  // Isto muda o texto "XuloV Stalker Hub" para o nome da tua lista!
+                name: listName,
                 url: proxyUrl,
                 title: "▶️ " + channelName,
                 behaviorHints: { notWebReady: true }
