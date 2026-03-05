@@ -72,7 +72,7 @@ const addon = {
 
         return {
             id: "org.xulov.stalker.multi",
-            version: "3.1.3",
+            version: "3.1.4",
             name: "XuloV Stalker Hub",
             description: "Suporte para até 5 Portais Stalker - Géneros reais + streams em Render",
             resources: ["catalog", "stream", "meta"],
@@ -116,6 +116,7 @@ const addon = {
 
             return {
                 metas: filteredChannels.map(ch => ({
+                    // LINHA CRÍTICA - usa crases (`) aqui!
                     id: `xlv:\( {listIdx}: \){ch.id}:${encodeURIComponent(ch.name)}`,
                     name: ch.name,
                     type: "tv",
@@ -139,8 +140,6 @@ const addon = {
             console.error(`[STREAM] ❌ ID inválido (NaN) - formato antigo ou cache. ID: ${id}`);
             return { streams: [] };
         }
-
-        console.log(`[STREAM] Lista detectada: ${listIdx}`);
 
         const lists = this.parseConfig(configBase64);
         const config = lists[listIdx];
