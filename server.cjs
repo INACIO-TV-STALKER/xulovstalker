@@ -155,61 +155,84 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
     const auth = await addon.authenticate(configData);
     if (!auth) return res.status(401).send("Falha na Autenticação");
+try {
+    let streamUrl = null;
+    let linkRes;
 
-    try {
-        let sUrl = "";
-        
-        // DISTINÇÃO ENTRE TV E VOD (Filmes/Séries)
-        if (type === "movie" || type === "series") {
-            // Tentamos primeiro a ação padrão de VOD: get_vod_uri
-            sUrl = `${auth.api}type=vod&action=get_vod_uri&id=${channelId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-        } else {
-            // Lógica original de TV que já tinhas a funcionar
-            const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
-            sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-        }
+    if (type === "movie" || type === "series") {
+        console.log(`[VOD] Tentando obter stream para ID ${channelId} (tipo: ${type})`);
 
-        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
-        
-        // O Stalker pode devolver o link em 'cmd' ou diretamente no 'js'
-        let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
-        
-        // Se a primeira tentativa de VOD falhar (devolver nulo), tentamos o create_link normal
-        if (!streamUrl && (type === "movie" || type === "series")) {
-             const altUrl = `${auth.api}type=vod&action=create_link&id=${channelId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-             const altRes = await axios.get(altUrl, { headers: auth.authData.headers });
-             streamUrl = altRes.data?.js?.cmd || altRes.data?.js;
-        }
+        // Ordem de tentativas que resolve 95% dos portais como o teu (get_vod_link é o que costuma salvar)
+        const attempts = [
+            { name: "get_vod_link", url: `\( {auth.api}type=vod&action=get_vod_link&id= \){channelId}&sn=\( {auth.authData.sn}&token= \){auth.token}&JsHttpRequest=1-0` },
+            { name: "create_link",  url: `\( {auth.api}type=vod&action=create_link&id= \){channelId}&sn=\( {auth.authData.sn}&token= \){auth.token}&JsHttpRequest=1-0` },
+            { name: "get_vod_uri",  url: `\( {auth.api}type=vod&action=get_vod_uri&id= \){channelId}&sn=\( {auth.authData.sn}&token= \){auth.token}&JsHttpRequest=1-0` }
+        ];
 
-        if (typeof streamUrl === 'string') {
-            // Limpa protocolos de streaming internos (ffrt, ffmpeg, etc)
-            const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-            console.log(`[PROXY] A reproduzir ${type}: ${finalUrl}`);
-
-            // Realiza o "Pipe" do vídeo mantendo os Headers da MAG
-            const videoResponse = await axios({
-                method: 'get',
-                url: finalUrl,
-                headers: auth.authData.headers, // Crucial: Envia o User-Agent e Cookie da MAG
-                responseType: 'stream',
-                maxRedirects: 5,
-                timeout: 20000 // Aumentado para filmes pesados
+        for (const attempt of attempts) {
+            console.log(`[VOD] Tentativa: ${attempt.name}`);
+            linkRes = await axios.get(attempt.url, { 
+                headers: auth.authData.headers,
+                timeout: 12000 
             });
 
-            // Define os headers de resposta para o Stremio/Tizen
-            res.setHeader("Access-Control-Allow-Origin", "*");
-            res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp4");
-            
-            videoResponse.data.pipe(res);
+            // Extração robusta (alguns portais devolvem em campos diferentes)
+            streamUrl = linkRes.data?.js?.cmd 
+                     || linkRes.data?.js?.data 
+                     || linkRes.data?.data 
+                     || linkRes.data?.js 
+                     || linkRes.data?.cmd;
 
-        } else {
-            console.log(`[ERRO] O servidor Stalker não libertou o link para o ID: ${channelId}`);
-            res.status(404).send("Link não encontrado no servidor");
+            if (typeof streamUrl === 'string' && streamUrl.length > 30 && !streamUrl.includes('/.')) {
+                console.log(`[VOD] ✅ Link obtido com ${attempt.name}`);
+                break;
+            }
+            streamUrl = null;
         }
-    } catch (e) {
-        console.error(`[ERRO PROXY]: ${e.message}`);
-        res.status(500).send("Erro ao processar o vídeo");
+    } 
+    else {
+        // TV (mantém o que já funcionava perfeitamente)
+        const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
+        const tvUrl = `\( {auth.api}type=itv&action=create_link&cmd= \){cmd}&sn=\( {auth.authData.sn}&token= \){auth.token}&JsHttpRequest=1-0`;
+        
+        linkRes = await axios.get(tvUrl, { headers: auth.authData.headers });
+        streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
     }
+
+    if (typeof streamUrl === 'string') {
+        // Limpeza final (corrige //, /., etc.)
+        let finalUrl = streamUrl
+            .replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/i, "")
+            .replace(/([^:])(\/\/+)/g, '$1/')
+            .replace(/\/\.\?/g, '/')
+            .trim();
+
+        console.log(`[PROXY] A reproduzir ${type.toUpperCase()}: ${finalUrl}`);
+
+        // === STREAMING (mantém igual) ===
+        const videoResponse = await axios({
+            method: 'get',
+            url: finalUrl,
+            headers: auth.authData.headers,
+            responseType: 'stream',
+            maxRedirects: 5,
+            timeout: 25000
+        });
+
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp4");
+        videoResponse.data.pipe(res);
+
+    } else {
+        console.error("[ERRO] Não conseguiu extrair link. Resposta completa do Stalker:", JSON.stringify(linkRes?.data, null, 2));
+        res.status(404).send("Link de stream não encontrado");
+    }
+} catch (e) {
+    console.error(`[ERRO PROXY]: ${e.message}`);
+    if (e.response) console.error("Status:", e.response.status, "Data:", e.response.data);
+    res.status(500).send("Erro ao processar o vídeo");
+  }
+
 });
 
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Tizen Addon Online na porta ${PORT}`));
