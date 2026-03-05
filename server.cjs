@@ -142,38 +142,54 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
-app.get('/proxy/:config/:listIdx/:channelId', async (req, res) => {
-    const { config, listIdx, channelId } = req.params;
-    const type = req.query.type || 'tv'; // Deteta se é filme ou TV
-    
-    const lists = addon.parseConfig(config);
-    const list = lists[parseInt(listIdx)];
-    if (!list) return res.status(404).send("Lista não encontrada");
 
-    const auth = await addon.authenticate(list);
-    if (!auth) return res.status(401).send("Falha na autenticação");
+// O SEGREDO PARA A TIZEN TV (Faz o pipe do vídeo com cabeçalhos corretos)
+app.get("/proxy/:config/:channelId", async (req, res) => {
+    const { config, channelId } = req.params;
+    const configData = addon.parseConfig(config);
+    if (!configData) return res.status(400).end();
+
+    const auth = await addon.authenticate(configData.url, configData);
+    if (!auth) return res.status(401).end();
 
     try {
-        // Se for filme, usa 'get_vod_uri', se for TV usa 'create_link'
-        const action = (type === 'movie') ? 'get_vod_uri' : 'create_link';
-        const param = (type === 'movie') ? `id=${channelId}` : `cmd=ffrt%20${channelId}`;
-        
-        const streamUrl = `${auth.api}type=itv&action=${action}&${param}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-        const streamRes = await axios.get(streamUrl, { headers: auth.authData.headers });
-        
-        let videoUrl = streamRes.data?.js?.cmd || streamRes.data?.js;
-        if (videoUrl && videoUrl.includes("http")) {
-            // Remove o prefixo ffrt se existir no link final
-            videoUrl = videoUrl.replace(/ffrt /g, "").replace(/ffmpeg /g, "");
-            console.log(`[PROXY] Redirecionando para: ${videoUrl}`);
-            res.redirect(videoUrl);
+        const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
+        const sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
+
+        let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
+        if (typeof streamUrl === 'string') {
+            const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+            console.log(`[PROXY] Tizen TV a pedir canal ${channelId}...`);
+
+            // NOVA LÓGICA DE VÍDEO: O Axios segue redirecionamentos (302) automaticamente!
+            try {
+                const videoResponse = await axios({
+                    method: 'get',
+                    url: finalUrl,
+                    headers: auth.authData.headers,
+                    responseType: 'stream', // Fundamental para não rebentar a memória do Render
+                    maxRedirects: 5
+                });
+
+                res.setHeader("Access-Control-Allow-Origin", "*");
+                // Em vez de forçar um formato, deixamos o portal ditar o tipo correto (HLS ou TS)
+                res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp2t");
+
+                // Envia o fluxo de vídeo para a TV
+                videoResponse.data.pipe(res);
+
+            } catch (vidErr) {
+                console.log("Erro no stream:", vidErr.message);
+                res.status(500).end();
+            }
+
         } else {
-            res.status(500).send("Não foi possível obter o link do vídeo");
+            res.status(404).end();
         }
     } catch (e) {
-        res.status(500).send("Erro no servidor de Proxy");
+        res.status(500).end();
     }
 });
 
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Tizen Addon Online na porta ${PORT}`));
-
