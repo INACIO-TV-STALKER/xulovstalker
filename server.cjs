@@ -144,61 +144,71 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
 
 // O SEGREDO PARA A TIZEN TV - ADICIONADO: Suporte para VOD (Filmes/Séries)
 // PROXY DE VÍDEO (Corrigido para Filmes e Séries)
+// PROXY DE VÍDEO (Versão 2.0 - Corrigida para Filmes e Séries)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
 
     const lists = addon.parseConfig(config);
     const configData = lists[listIdx];
-    if (!configData) return res.status(400).end();
+    if (!configData) return res.status(400).send("Configuração inválida");
 
     const auth = await addon.authenticate(configData);
-    if (!auth) return res.status(401).end();
+    if (!auth) return res.status(401).send("Falha na Autenticação");
 
     try {
         let sUrl = "";
         
-        // DIFERENCIAÇÃO DE ROTA:
+        // DISTINÇÃO ENTRE TV E VOD (Filmes/Séries)
         if (type === "movie" || type === "series") {
-            // Para Filmes e Séries, a ação correta no Stalker costuma ser 'get_vod_uri' ou 'create_link' com o ID simples
-            // Se o channelId já for um link (contém / ou .), enviamos como cmd, se for só número, enviamos como item
-            const action = channelId.includes("/") ? "create_link" : "get_vod_uri";
-            const param = channelId.includes("/") ? `cmd=${encodeURIComponent(channelId)}` : `id=${channelId}`;
-            sUrl = `${auth.api}type=vod&action=${action}&${param}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+            // Tentamos primeiro a ação padrão de VOD: get_vod_uri
+            sUrl = `${auth.api}type=vod&action=get_vod_uri&id=${channelId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
         } else {
-            // LÓGICA DE TV ORIGINAL (MANTIDA)
+            // Lógica original de TV que já tinhas a funcionar
             const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
             sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
         }
 
         const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
-        let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.js?.data;
         
+        // O Stalker pode devolver o link em 'cmd' ou diretamente no 'js'
+        let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
+        
+        // Se a primeira tentativa de VOD falhar (devolver nulo), tentamos o create_link normal
+        if (!streamUrl && (type === "movie" || type === "series")) {
+             const altUrl = `${auth.api}type=vod&action=create_link&id=${channelId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+             const altRes = await axios.get(altUrl, { headers: auth.authData.headers });
+             streamUrl = altRes.data?.js?.cmd || altRes.data?.js;
+        }
+
         if (typeof streamUrl === 'string') {
-            // Limpa lixo do link (ffrt, ffmpeg, etc)
+            // Limpa protocolos de streaming internos (ffrt, ffmpeg, etc)
             const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
             console.log(`[PROXY] A reproduzir ${type}: ${finalUrl}`);
 
-            // Pipe do vídeo para a TV
+            // Realiza o "Pipe" do vídeo mantendo os Headers da MAG
             const videoResponse = await axios({
                 method: 'get',
                 url: finalUrl,
-                headers: auth.authData.headers,
+                headers: auth.authData.headers, // Crucial: Envia o User-Agent e Cookie da MAG
                 responseType: 'stream',
-                maxRedirects: 5
+                maxRedirects: 5,
+                timeout: 20000 // Aumentado para filmes pesados
             });
 
+            // Define os headers de resposta para o Stremio/Tizen
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp4");
+            
             videoResponse.data.pipe(res);
 
         } else {
-            console.log("Stalker não devolveu link válido:", linkRes.data);
-            res.status(404).end();
+            console.log(`[ERRO] O servidor Stalker não libertou o link para o ID: ${channelId}`);
+            res.status(404).send("Link não encontrado no servidor");
         }
     } catch (e) {
-        console.error("Erro no Proxy:", e.message);
-        res.status(500).end();
+        console.error(`[ERRO PROXY]: ${e.message}`);
+        res.status(500).send("Erro ao processar o vídeo");
     }
 });
 
