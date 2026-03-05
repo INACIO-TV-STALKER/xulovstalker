@@ -47,94 +47,85 @@ const addon = {
     },
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
-        const catalogs = await Promise.all(lists.map(async (l, i) => {
-            let genreOptions = ["Predefinido"]; 
-            const auth = await this.authenticate(l);
-            if (auth) {
-                try {
-                    const gUrl = auth.api + "type=itv&action=get_genres&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
-                    const gRes = await axios.get(gUrl, { headers: auth.authData.headers, timeout: 5000 });
-                    const genres = Array.isArray(gRes.data?.js) ? gRes.data.js : [];
-                    
-                    // FILTRO MÁGICO: Remove "All" e "Predefinido" vindos do portal para não haver duplicados
-                    const portalGenres = genres
-                        .map(g => g.title ? g.title.trim() : "")
-                        .filter(title => title && title.toLowerCase() !== "all" && title.toLowerCase() !== "predefinido");
-                    
-                    genreOptions = [...genreOptions, ...portalGenres];
-                } catch (e) {}
-            }
-            return {
+        const catalogs = [];
+
+        lists.forEach((l, i) => {
+            // Catálogo de TV (Canais)
+            catalogs.push({
                 type: "tv",
-                id: "stalker_cat_" + i,
-                name: l.name || ("Lista " + (i + 1)),
-                extra: [{
-                    name: "genre",
-                    isRequired: false,
-                    options: genreOptions
-                }]
-            };
-        }));
+                id: `stalker_tv_${i}`,
+                name: `${l.name || 'Lista '+(i+1)} - Canais`,
+                extra: [{ name: "genre", isRequired: false }]
+            });
+            // NOVO: Catálogo de Filmes
+            catalogs.push({
+                type: "movie",
+                id: `stalker_mov_${i}`,
+                name: `${l.name || 'Lista '+(i+1)} - Filmes`,
+                extra: [{ name: "skip", isRequired: false }] // Ativa a paginação
+            });
+        });
 
         return {
             id: "org.xulov.stalker.multi",
-            version:"3.3.0",
+            version: "3.2.0", // Versão nova para limpar a cache!
             name: "XuloV Stalker Hub",
-            description: "Suporte para até 5 Portais Stalker - Géneros reais + streams em Render",
+            description: "Canais, Filmes e Séries com Paginação",
             resources: ["catalog", "stream", "meta"],
-            types: ["tv"],
+            types: ["tv", "movie", "series"],
             idPrefixes: ["xlv:"],
             catalogs: catalogs
         };
     },
 
     async getCatalog(type, id, extra, configBase64) {
+        const listIdx = parseInt(id.split("_").pop());
         const lists = this.parseConfig(configBase64);
-        const listIdx = parseInt(id.replace("stalker_cat_", ""));
         const config = lists[listIdx];
         if (!config) return { metas: [] };
 
         const auth = await this.authenticate(config);
         if (!auth) return { metas: [] };
 
-        try {
-            var url = auth.api + "type=itv&action=get_all_channels&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
-            var res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
-            var rawData = res.data?.js?.data || res.data?.js || [];
-            var channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
+        // Define a ação com base no tipo (itv para canais, vod para filmes)
+        let action = "get_all_channels";
+        let stalkerType = "itv";
+        
+        if (type === "movie") {
+            action = "get_ordered_list"; // Ação padrão para VOD no Stalker
+            stalkerType = "vod";
+        }
 
-            let filteredChannels = channels;
+        // PAGINAÇÃO: O Stremio envia 'skip' (0, 100, 200...). O Stalker costuma usar páginas.
+        const pageSize = 100;
+        const page = extra.skip ? Math.floor(extra.skip / pageSize) + 1 : 1;
+
+        try {
+            let url = `${auth.api}type=${stalkerType}&action=${action}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             
-            const selectedGenre = extra?.genre ? extra.genre.trim() : "";
-            
-            // SE O UTILIZADOR ESCOLHER "Predefinido" ou "All", NÃO FILTRA NADA (Mostra tudo!)
-            if (selectedGenre && selectedGenre !== "Predefinido" && selectedGenre.toLowerCase() !== "all") {
-                try {
-                    const gUrl = auth.api + "type=itv&action=get_genres&sn=" + auth.authData.sn + "&token=" + auth.token + "&JsHttpRequest=1-0";
-                    const gRes = await axios.get(gUrl, { headers: auth.authData.headers, timeout: 5000 });
-                    const genres = Array.isArray(gRes.data?.js) ? gRes.data.js : [];
-                    const genreMap = {};
-                    genres.forEach(g => {
-                        if (g.title && g.id !== undefined) genreMap[g.title.trim()] = g.id;
-                    });
-                    
-                    const genreId = genreMap[selectedGenre];
-                    if (genreId !== undefined) {
-                        filteredChannels = channels.filter(ch => String(ch.tv_genre_id || "") === String(genreId));
-                    }
-                } catch (e) {}
+            // Se for filme, adicionamos filtros de página para não sobrecarregar
+            if (type === "movie") {
+                url += `&p=${page}`; 
             }
 
+            const res = await axios.get(url, { headers: auth.authData.headers, timeout: 15000 });
+            const rawData = res.data?.js?.data || res.data?.js || [];
+            const items = Array.isArray(rawData) ? rawData : Object.values(rawData);
+
             return {
-                metas: filteredChannels.map(ch => ({
-                    id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name)}`,
-                    name: ch.name,
-                    type: "tv",
-                    poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "",
-                    posterShape: "square"
+                metas: items.map(item => ({
+                    id: `xlv:${listIdx}:${item.id}:${encodeURIComponent(item.name || item.title)}`,
+                    name: item.name || item.title,
+                    type: type,
+                    poster: item.screenshot_uri || item.logo || "",
+                    posterShape: type === "tv" ? "square" : "poster",
+                    description: item.description || ""
                 }))
             };
-        } catch (e) { return { metas: [] }; }
+        } catch (e) { 
+            console.error("Erro no catálogo:", e.message);
+            return { metas: [] }; 
+        }
     },
 
     async getStreams(type, id, configBase64, host) {
