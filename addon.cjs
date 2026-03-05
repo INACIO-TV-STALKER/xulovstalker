@@ -127,8 +127,6 @@ const addon = {
             };
         } catch (e) { return { metas: [] }; }
     },
-
-    // ERRO CORRIGIDO: Passar o host, calcular qual é a lista e enviar para o proxy para a Tizen aceitar
     async getStreams(type, id, configBase64, host) {
         console.log(`[STREAM] ID recebido: ${id}`);
 
@@ -154,14 +152,21 @@ const addon = {
 
         console.log(`[STREAM] ✅ Redirecionado para Proxy Tizen: ${proxyUrl}`);
 
+        // --- A MAGIA ACONTECE AQUI ---
+        // Vamos buscar o nome que deste à lista na página de configuração
+        const lists = this.parseConfig(configBase64);
+        const listName = lists[listIdx]?.name || "XuloV Stalker Hub";
+
         return {
             streams: [{
+                name: listName,  // Isto muda o texto "XuloV Stalker Hub" para o nome da tua lista!
                 url: proxyUrl,
                 title: "▶️ " + channelName,
                 behaviorHints: { notWebReady: true }
             }]
         };
     }
+
 };
 
 module.exports = addon;
