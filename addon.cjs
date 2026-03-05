@@ -1,85 +1,82 @@
-const axios = require("axios");
-const crypto = require("crypto");
+const axios = require('axios');
 
-const getStalkerAuth = function(config, token) {
-    var mac = (config.mac || "").toUpperCase();
-    var seed = mac.replace(/:/g, "");
-    var id1 = config.id1 || crypto.createHash('md5').update(seed + "id1").digest('hex').toUpperCase();
-    var id2 = config.id2 || crypto.createHash('md5').update(seed + "id2").digest('hex').toUpperCase();
-    var sig = config.sig || crypto.createHash('md5').update(seed + "sig").digest('hex').toUpperCase();
-    var sn = config.sn || crypto.createHash('md5').update(seed + "sn").digest('hex').substring(0, 13).toUpperCase();
-    var cookie = "mac=" + encodeURIComponent(mac) + "; stb_lang=en; timezone=Europe/Lisbon;";
-    if (token) cookie += " access_token=" + token + ";";
-    return {
-        sn: sn, id1: id1, id2: id2, sig: sig,
-        headers: {
-            "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3",
-            "X-User-Agent": "Model: " + (config.model || 'MAG254') + "; SW: 2.18-r14-254; Device ID: " + id1 + "; Device ID2: " + id2 + "; Signature: " + sig + ";",
-            "Cookie": cookie, "Accept": "*/*", "Referer": config.url.replace(/\/$/, "") + "/c/"
-        }
-    };
-};
-
-const addon = {
+class StalkerAddon {
     parseConfig(configBase64) {
         try {
-            const data = JSON.parse(Buffer.from(configBase64, 'base64').toString());
-            return data.lists ? data.lists : [data];
-        } catch (e) { return []; }
-    },
+            return JSON.parse(Buffer.from(configBase64, 'base64').toString());
+        } catch (e) {
+            return [];
+        }
+    }
 
     async authenticate(config) {
-        if (!config || !config.url) return null;
-        var authData = getStalkerAuth(config, null);
-        // ERRO CORRIGIDO: Removidos os caracteres estranhos \( e \)
-        var baseUrl = config.url.trim().replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
-        if (!baseUrl.endsWith('/')) baseUrl += '/';
-        var url = baseUrl + "portal.php";
-        try {
-            var hUrl = url + "?type=stb&action=handshake&sn=" + authData.sn + "&device_id=" + authData.id1 + "&JsHttpRequest=1-0";
-            var res = await axios.get(hUrl, { headers: authData.headers, timeout: 5000 });
-            var token = res.data?.js?.token || res.data?.token || null;
-            if (token) {
-                var fullAuth = getStalkerAuth(config, token);
-                return { token: token, api: url + "?", authData: fullAuth };
+        const { url, mac } = config;
+        const api = url.endsWith('/') ? url + 'portal.php?' : url + '/portal.php?';
+        const authData = {
+            sn: "00:1A:79:" + Math.random().toString(16).slice(2, 8).toUpperCase(),
+            headers: {
+                "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) Mag200/2.0.1 Safari/533.3",
+                "Cookie": `mac=${encodeURIComponent(mac)}; stb_lang=en; timezone=Europe/Lisbon;`
             }
-        } catch (e) { return null; }
-    },
-                };
-            } catch (e) { return { metas: [] }; }
+        };
+
+        try {
+            const res = await axios.get(`${api}type=stb&action=handshake&JsHttpRequest=1-0`, { headers: authData.headers, timeout: 5000 });
+            const token = res.data?.js?.token;
+            if (!token) return null;
+
+            const profileRes = await axios.get(`${api}type=stb&action=get_profile&token=${token}&JsHttpRequest=1-0`, { headers: authData.headers, timeout: 5000 });
+            return { api, token, authData, profile: profileRes.data?.js };
+        } catch (e) {
+            return null;
         }
+    }
+
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
         const catalogs = [];
 
-        lists.forEach((l, i) => {
-            // CATALOGO TV (Com géneros)
+        for (let i = 0; i < lists.length; i++) {
+            const l = lists[i];
+            let genreOptions = ["Predefinido"];
+            
+            // Tenta buscar os géneros reais para o menu aparecer
+            const auth = await this.authenticate(l);
+            if (auth) {
+                try {
+                    const gUrl = `${auth.api}type=itv&action=get_genres&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                    const gRes = await axios.get(gUrl, { headers: auth.authData.headers, timeout: 5000 });
+                    const genres = Array.isArray(gRes.data?.js) ? gRes.data.js : [];
+                    genres.forEach(g => { if (g.title) genreOptions.push(g.title); });
+                } catch (e) {}
+            }
+
             catalogs.push({
                 type: "tv",
                 id: `stalker_tv_${i}`,
                 name: `${l.name || 'Lista '+(i+1)} 📺`,
-                extra: [{ name: "genre", isRequired: false }]
+                extra: [{ name: "genre", options: genreOptions, isRequired: false }]
             });
-            // CATALOGO FILMES (Com paginação)
+
             catalogs.push({
                 type: "movie",
                 id: `stalker_mov_${i}`,
                 name: `${l.name || 'Lista '+(i+1)} 🎬`,
                 extra: [{ name: "skip", isRequired: false }]
             });
-        });
+        }
 
         return {
             id: "org.xulov.stalker.multi",
-            version: "3.4.0", // Versão nova para forçar limpeza de cache
+            version: "3.5.0",
             name: "XuloV Stalker Hub",
-            description: "Canais e Filmes - Versão Estável 100%",
+            description: "Canais e Filmes - Full Support",
             resources: ["catalog", "stream", "meta"],
             types: ["tv", "movie"],
             idPrefixes: ["xlv:"],
             catalogs: catalogs
         };
-    },
+    }
 
     async getCatalog(type, id, extra, configBase64) {
         const listIdx = parseInt(id.split("_").pop());
@@ -90,30 +87,26 @@ const addon = {
         const auth = await this.authenticate(config);
         if (!auth) return { metas: [] };
 
-        // --- LÓGICA PARA TV (CANAIS) ---
-        if (type === "tv") {
-            try {
+        try {
+            if (type === "tv") {
                 const url = `${auth.api}type=itv&action=get_all_channels&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                 const res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
                 const rawData = res.data?.js?.data || res.data?.js || [];
-                const channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
+                let channels = Array.isArray(rawData) ? rawData : Object.values(rawData);
 
-                let filtered = channels;
-                const selectedGenre = extra?.genre?.trim();
-
-                // RECUPERAÇÃO DOS GÉNEROS (Para aparecerem no menu)
+                const selectedGenre = extra?.genre;
                 if (selectedGenre && selectedGenre !== "Predefinido") {
                     const gUrl = `${auth.api}type=itv&action=get_genres&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                     const gRes = await axios.get(gUrl, { headers: auth.authData.headers });
                     const genres = Array.isArray(gRes.data?.js) ? gRes.data.js : [];
-                    const genreId = genres.find(g => g.title === selectedGenre)?.id;
-                    if (genreId) {
-                        filtered = channels.filter(ch => String(ch.tv_genre_id) === String(genreId));
+                    const genreObj = genres.find(g => g.title === selectedGenre);
+                    if (genreObj) {
+                        channels = channels.filter(ch => String(ch.tv_genre_id) === String(genreObj.id));
                     }
                 }
 
                 return {
-                    metas: filtered.map(ch => ({
+                    metas: channels.map(ch => ({
                         id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name)}`,
                         name: ch.name,
                         type: "tv",
@@ -121,12 +114,9 @@ const addon = {
                         posterShape: "square"
                     }))
                 };
-            } catch (e) { return { metas: [] }; }
-        }
+            }
 
-        // --- LÓGICA PARA FILMES ---
-        if (type === "movie") {
-            try {
+            if (type === "movie") {
                 const pageSize = 60;
                 const page = extra.skip ? Math.floor(extra.skip / pageSize) + 1 : 1;
                 const url = `${auth.api}type=vod&action=get_ordered_list&p=${page}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
@@ -143,39 +133,36 @@ const addon = {
                         posterShape: "poster"
                     }))
                 };
-            } catch (e) { return { metas: [] }; }
+            }
+        } catch (e) {
+            console.error("Erro no catálogo:", e.message);
         }
         return { metas: [] };
-    },
+    }
 
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":");
         const listIdx = parseInt(parts[1]);
-        const channelId = parts[2];
-        const channelName = decodeURIComponent(parts[3] || "Conteúdo");
+        const contentId = parts[2];
+        const contentName = decodeURIComponent(parts[3] || "Conteúdo");
 
         const lists = this.parseConfig(configBase64);
         const listName = lists[listIdx]?.name || "XuloV Stalker Hub";
         
-        // CORREÇÃO DOS FILMES: Se o tipo for movie, usamos 'get_vod_uri', se for tv usamos 'create_link'
-        const action = (type === "movie") ? "get_vod_uri" : "create_link";
-        const paramName = (type === "movie") ? "id" : "cmd";
-        const paramValue = (type === "movie") ? channelId : `ffrt%20${channelId}`;
-
         const protocol = host.includes("localhost") ? "http" : "https";
-        // Vamos criar uma rota de proxy que entenda se é filme ou TV
-        const proxyUrl = `${protocol}://${host}/proxy/${encodeURIComponent(configBase64)}/${listIdx}/${channelId}?type=${type}`;
+        // Adicionamos o tipo no final para o proxy saber o que fazer
+        const proxyUrl = `${protocol}://${host}/proxy/${encodeURIComponent(configBase64)}/${listIdx}/${contentId}?type=${type}`;
 
         return {
             streams: [{
                 name: listName,
                 url: proxyUrl,
-                title: "▶️ " + channelName,
+                title: "▶️ " + contentName,
                 behaviorHints: { notWebReady: true }
             }]
         };
     }
+}
 
-};
+module.exports = StalkerAddon;
 
-module.exports = addon;
