@@ -141,7 +141,7 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
-// PROXY DE VÍDEO (Corrigido para Erro 404, Connect e Range)
+// PROXY DE VÍDEO (Corrigido para 401 Unauthorized)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -157,7 +157,6 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         let cleanId = decodeURIComponent(channelId);
         let sUrl = "";
 
-        // Ação para obter o link dependendo se é TV ou Filme/Série
         if (type === "movie" || type === "series") {
             sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
         } else {
@@ -168,7 +167,6 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 10000 });
         let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
 
-        // Tentativa de segurança para Filmes caso a primeira falhe
         if (!streamUrl && type === "movie") {
             const altUrl = `${auth.api}type=vod&action=get_vod_uri&id=${cleanId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             const altRes = await axios.get(altUrl, { headers: auth.authData.headers, timeout: 10000 });
@@ -176,13 +174,11 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         }
 
         if (typeof streamUrl === 'string') {
-            // LIMPEZA DO LINK (Isto resolve o Erro 404)
             let finalUrl = streamUrl
                 .replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/i, "")
                 .replace(/([^:])(\/\/+)/g, '$1/')
                 .trim();
 
-            // Substitui o "/." pelo ID correto do filme (resolve o erro dos portais Dragon/SBS)
             if (finalUrl.includes('/.?play_token=')) {
                 finalUrl = finalUrl.replace('/.', `/${cleanId}`);
             }
@@ -191,24 +187,28 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             console.log(`[PROXY] URL Final Limpa: ${finalUrl}`);
 
             try {
-                // PREPARAÇÃO DOS CABEÇALHOS (Resolve o "saltar fora")
-                const requestHeaders = { ...auth.authData.headers };
+                // A SOLUÇÃO DO 401 ESTÁ AQUI: Filtragem de Cabeçalhos
+                // Em vez de mandar a "tranqueira" toda da API, mandamos só o BI da Box MAG
+                const videoHeaders = {
+                    "User-Agent": auth.authData.headers["User-Agent"] || "StrateM/1.0.0 (compatible; MAG254; Queen; Linux/2.6.23)",
+                    "Cookie": auth.authData.headers["Cookie"] || "",
+                    "Accept": "*/*",
+                    "Connection": "keep-alive"
+                };
                 
-                // Se o Stremio pedir um pedaço específico do filme, repassamos para o portal
                 if (req.headers.range) {
-                    requestHeaders['Range'] = req.headers.range;
+                    videoHeaders['Range'] = req.headers.range;
                 }
 
                 const videoResponse = await axios({
                     method: 'get',
                     url: finalUrl,
-                    headers: requestHeaders,
+                    headers: videoHeaders, // Usamos os headers limpos
                     responseType: 'stream',
                     maxRedirects: 10,
-                    timeout: 30000 // Resolve o erro de "connect"
+                    timeout: 30000
                 });
 
-                // Repassa para o Stremio os dados do tamanho do vídeo para ele não crashar
                 res.setHeader("Access-Control-Allow-Origin", "*");
                 res.setHeader("Content-Type", videoResponse.headers['content-type'] || (type === 'tv' ? 'video/mp2t' : 'video/mp4'));
                 res.setHeader("Accept-Ranges", "bytes");
@@ -219,20 +219,19 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
                 
                 if (videoResponse.headers['content-range']) {
                     res.setHeader("Content-Range", videoResponse.headers['content-range']);
-                    res.status(206); // 206 significa "Conteúdo Parcial", crucial para filmes
+                    res.status(206);
                 } else {
                     res.status(200);
                 }
 
-                // Injeta o vídeo para o Stremio
                 videoResponse.data.pipe(res);
 
-                // Quando o utilizador fecha o filme, fechamos a ligação para não esgotar o servidor
                 req.on('close', () => {
                     videoResponse.data.destroy();
                 });
 
             } catch (vidErr) {
+                // Se der 401 novamente, avisamos exatamente o que falhou
                 console.log(`Erro no stream: ${vidErr.message}`);
                 res.status(500).end();
             }
