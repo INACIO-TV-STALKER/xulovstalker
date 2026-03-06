@@ -1,8 +1,6 @@
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
-const http = require("http");
-const https = require("https");
 const addon = require("./addon.cjs");
 
 const PORT = process.env.PORT || 3000;
@@ -14,7 +12,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// A Nova Página de Configuração (Gera o link Base64) - INTACTA
+// PÁGINA DE CONFIGURAÇÃO (Gera o link para o Stremio)
 app.get("/", (req, res) => res.redirect("/configure"));
 app.get("/configure", (req, res) => {
     res.send(`
@@ -38,78 +36,52 @@ app.get("/configure", (req, res) => {
             <div class="container">
                 <h2 style="text-align:center">XuloV Stalker Hub</h2>
                 <div id="lists-container"></div>
-                <button class="add-btn" onclick="addList()">+ Adicionar Nova Lista (Máx 5)</button>
+                <button class="add-btn" onclick="addList()">+ Adicionar Nova Lista</button>
                 <button class="install-btn" onclick="install()">🚀 INSTALAR NO STREMIO</button>
             </div>
-
             <script>
                 let listCount = 0;
-
                 function addList() {
-                    if(listCount >= 5) return alert("Máximo de 5 listas atingido!");
+                    if(listCount >= 5) return alert("Máximo de 5 listas!");
                     listCount++;
                     const id = Date.now();
                     const html = \`
                         <div class="list-box" id="box-\${id}">
                             <div class="remove-btn" onclick="removeList(\${id})">REMOVER</div>
                             <h3>LISTA #\${listCount}</h3>
-                            <label>NOME DA LISTA</label>
-                            <input type="text" class="name" placeholder="Ex: IPTV Portugal">
-                            <label>URL PORTAL</label>
-                            <input type="text" class="url" placeholder="http://portal.com:8080/c/">
-                            <label>MAC ADDRESS</label>
-                            <input type="text" class="mac" placeholder="00:1A:79:XX:XX:XX">
+                            <label>NOME DA LISTA</label><input type="text" class="name" placeholder="Ex: IPTV">
+                            <label>URL PORTAL</label><input type="text" class="url" placeholder="http://portal.com/c/">
+                            <label>MAC ADDRESS</label><input type="text" class="mac" placeholder="00:1A:79:XX:XX:XX">
                             <label>BOX MODEL</label>
                             <select class="model">
-                                <option value="MAG250">MAG 250</option>
-                                <option value="MAG254">MAG 254</option>
-                                <option value="MAG256">MAG 256</option>
-                                <option value="MAG322">MAG 322</option>
-                                <option value="MAG424">MAG 424</option>
-                                <option value="MAG522">MAG 522</option>
+                                <option value="MAG322">MAG 322</option><option value="MAG254">MAG 254</option>
                             </select>
-                            <span class="adv-toggle" onclick="toggleAdv(\${id})">Configurações Avançadas</span>
+                            <span class="adv-toggle" onclick="toggleAdv(\${id})">Avançado</span>
                             <div class="advanced" id="adv-\${id}">
-                                <label>SERIAL NUMBER (SN)</label><input type="text" class="sn">
-                                <label>DEVICE ID 1</label><input type="text" class="id1">
-                                <label>DEVICE ID 2</label><input type="text" class="id2">
-                                <label>SIGNATURE</label><input type="text" class="sig">
+                                <label>SN</label><input type="text" class="sn"><label>ID1</label><input type="text" class="id1">
                             </div>
                         </div>\`;
                     document.getElementById('lists-container').insertAdjacentHTML('beforeend', html);
                 }
-
-                function removeList(id) {
-                    document.getElementById('box-'+id).remove();
-                    listCount--;
-                }
-
-                function toggleAdv(id) {
+                function removeList(id) { document.getElementById('box-'+id).remove(); listCount--; }
+                function toggleAdv(id) { 
                     const el = document.getElementById('adv-'+id);
                     el.style.display = el.style.display === 'block' ? 'none' : 'block';
                 }
-
                 function install() {
                     const boxes = document.querySelectorAll('.list-box');
-                    if(boxes.length === 0) return alert("Adiciona pelo menos uma lista!");
-
                     const lists = Array.from(boxes).map(box => ({
                         name: box.querySelector('.name').value.trim(),
                         url: box.querySelector('.url').value.trim(),
                         mac: box.querySelector('.mac').value.trim(),
                         model: box.querySelector('.model').value,
                         sn: box.querySelector('.sn').value.trim(),
-                        id1: box.querySelector('.id1').value.trim(),
-                        id2: box.querySelector('.id2').value.trim(),
-                        sig: box.querySelector('.sig').value.trim()
+                        id1: box.querySelector('.id1').value.trim()
                     }));
-
-                    const config = { lists };
-                    const b64 = btoa(JSON.stringify(config));
+                    const b64 = btoa(JSON.stringify({ lists }));
                     window.location.href = "stremio://" + window.location.host + "/" + b64 + "/manifest.json";
                 }
-
-                addList(); 
+                addList();
             </script>
         </body></html>
     `);
@@ -117,7 +89,8 @@ app.get("/configure", (req, res) => {
 
 // ROTAS DO STREMIO
 app.get("/:config/manifest.json", async (req, res) => {
-    res.json(await addon.getManifest(req.params.config));
+    try { res.json(await addon.getManifest(req.params.config)); }
+    catch(e) { res.status(500).send(e.message); }
 });
 
 app.get("/:config/catalog/:type/:id/:extra?.json", async (req, res) => {
@@ -132,7 +105,6 @@ app.get("/:config/catalog/:type/:id/:extra?.json", async (req, res) => {
     res.json(await addon.getCatalog(type, id, extraObj, config));
 });
 
-// ADICIONADO: Agora a rota Meta chama a função do addon para carregar episódios de Séries
 app.get("/:config/meta/:type/:id.json", async (req, res) => {
     res.json(await addon.getMeta(req.params.type, req.params.id, req.params.config));
 });
@@ -141,9 +113,8 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
-// =============================================
-// PROXY DE VÍDEO (Corrigido Sintaxe + Séries)
-// =============================================
+
+// PROXY DE VÍDEO (Corrigido e com suporte a Séries/Filmes)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -157,69 +128,38 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
     try {
         let streamUrl = null;
-        let rawResponse = null;
-        
-        // RECUPERADO: Descodifica o Base64 do Stremio para as séries funcionarem
         let cleanId = decodeURIComponent(channelId);
 
         if (type === "movie" || type === "series") {
-            console.log(`[VOD] Tentando obter stream para ID ${cleanId} (tipo: ${type})`);
-
-            // CORRIGIDO: Os símbolos $ nas variáveis e adicionada a tentativa "cmd" essencial para Séries
+            // Tentativas para VOD (Filmes/Séries)
             const attempts = [
-                { name: "create_link_cmd", url: `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0` },
-                { name: "get_vod_link", url: `${auth.api}type=vod&action=get_vod_link&id=${cleanId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0` },
-                { name: "create_link",  url: `${auth.api}type=vod&action=create_link&id=${cleanId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0` },
-                { name: "get_vod_uri",  url: `${auth.api}type=vod&action=get_vod_uri&id=${cleanId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0` },
-                { name: "get_vod_url",  url: `${auth.api}type=vod&action=get_vod_url&id=${cleanId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0` }
+                { name: "cmd_mode", url: `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0` },
+                { name: "id_mode", url: `${auth.api}type=vod&action=create_link&id=${cleanId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0` },
+                { name: "uri_mode", url: `${auth.api}type=vod&action=get_vod_uri&id=${cleanId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0` }
             ];
 
             for (const attempt of attempts) {
-                console.log(`[VOD] Tentativa: ${attempt.name}`);
-                const linkRes = await axios.get(attempt.url, {
-                    headers: auth.authData.headers,
-                    timeout: 15000
-                });
-                rawResponse = linkRes.data;
-
-                streamUrl =
-                    linkRes.data?.js?.cmd ||
-                    linkRes.data?.js?.data ||
-                    linkRes.data?.data?.cmd ||
-                    linkRes.data?.data?.url ||
-                    linkRes.data?.js?.url ||
-                    linkRes.data?.cmd ||
-                    linkRes.data?.url ||
-                    (typeof linkRes.data?.js === 'string' ? linkRes.data.js : null);
-
-                if (typeof streamUrl === 'string' && streamUrl.length > 40 && !streamUrl.includes('/.') && !streamUrl.includes('undefined')) {
-                    console.log(`[VOD] ✅ Link obtido com ${attempt.name}`);
-                    break;
-                }
+                const linkRes = await axios.get(attempt.url, { headers: auth.authData.headers, timeout: 10000 });
+                streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js?.data || linkRes.data?.cmd || (typeof linkRes.data?.js === 'string' ? linkRes.data.js : null);
+                if (typeof streamUrl === 'string' && streamUrl.length > 30 && !streamUrl.includes('/.')) break;
                 streamUrl = null;
             }
-
-            if (!streamUrl && rawResponse) {
-                console.error("[ERRO VOD] Nenhuma tentativa funcionou.");
-            }
-        }
-        else {
-            // TV: CORRIGIDO os símbolos $ nas variáveis
+        } else {
+            // TV EM DIRETO
             const cmd = encodeURIComponent(`ffrt http://localhost/ch/${cleanId}`);
             const tvUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             const linkRes = await axios.get(tvUrl, { headers: auth.authData.headers });
             streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
         }
 
-        if (typeof streamUrl === 'string' && streamUrl.length > 30) {
+        if (typeof streamUrl === 'string') {
             let finalUrl = streamUrl
                 .replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/i, "")
-                .replace(/([^:])(\/\/+)/g, '$1/')                    
-                .replace(/\/\.(\?play_token=)/gi, `/${cleanId}$1`) // A tua correção elrinconcito
-                .replace(/undefined/g, '')
+                .replace(/([^:])(\/\/+)/g, '$1/') 
+                .replace(/\/\.(\?play_token=)/gi, `/${cleanId}$1`) // Correção elrinconcito
                 .trim();
 
-            console.log(`[PROXY] Link Final gerado para ${type}: ${finalUrl}`);
+            console.log(`[PROXY] Reproduzindo: ${finalUrl}`);
 
             const videoResponse = await axios({
                 method: 'get',
@@ -233,16 +173,14 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp4");
             videoResponse.data.pipe(res);
-
         } else {
-            console.error(`[ERRO STREAM] Nenhum link válido para ${channelId}`);
-            res.status(404).send("Link não encontrado");
+            res.status(404).send("Stream não encontrada");
         }
     } catch (e) {
-        console.error(`[ERRO PROXY]: ${e.message}`);
-        res.status(500).send("Erro ao processar o vídeo");
+        console.error("[ERRO PROXY]:", e.message);
+        res.status(500).send("Erro de vídeo");
     }
 });
 
-app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Tizen Addon Online na porta ${PORT}`));
+app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Addon Online na porta ${PORT}`));
 
