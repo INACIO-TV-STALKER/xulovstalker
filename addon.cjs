@@ -245,7 +245,7 @@ const addon = {
                 name: listName,  
                 url: proxyUrl,
                 title: "▶️ " + (type === "tv" ? channelName : "Reproduzir Video"),
-                behaviorHints: { notWebReady: true }
+                behaviorHints: { notWebReady: false }
             }]
         };
     }
