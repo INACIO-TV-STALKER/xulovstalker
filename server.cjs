@@ -141,74 +141,102 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
+// =============================================
+// PROXY DE VÍDEO (Versão 3.0 - Corrigida para elrinconcito + portais custom)
+// =============================================
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
 
     const lists = addon.parseConfig(config);
     const configData = lists[listIdx];
-    if (!configData) return res.status(400).end();
+    if (!configData) return res.status(400).send("Configuração inválida");
 
     const auth = await addon.authenticate(configData);
-    if (!auth) return res.status(401).end();
+    if (!auth) return res.status(401).send("Falha na Autenticação");
 
     try {
-        let sUrl = "";
-        let cleanId = decodeURIComponent(channelId);
-        
-        if (type === "series" || type === "movie") {
-            sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-        } else {
-            // TV ORIGINAL
-            const cmd = encodeURIComponent(`ffrt http://localhost/ch/${cleanId}`);
-            sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
-        }
+        let streamUrl = null;
+        let rawResponse = null;
 
-        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
-        let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
+        if (type === "movie" || type === "series") {
+            console.log(`[VOD] Tentando obter stream para ID ${channelId} (tipo: ${type})`);
 
-        if (!streamUrl && type === "movie") {
-            const altUrl = `${auth.api}type=vod&action=get_vod_uri&movie_id=${cleanId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-            const altRes = await axios.get(altUrl, { headers: auth.authData.headers });
-            streamUrl = altRes.data?.js?.cmd || altRes.data?.js;
-        }
-        
-        if (typeof streamUrl === 'string') {
-            // CORREÇÃO: Limpamos o "ffmpeg" ANTES de validar se é HTTP
-            const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-            
-            if (finalUrl.startsWith('http')) {
-                console.log(`[PROXY] Link Final gerado para ${type}: ${finalUrl}`);
+            const attempts = [
+                { name: "get_vod_link", url: `\( {auth.api}type=vod&action=get_vod_link&id= \){channelId}&sn=\( {auth.authData.sn}&token= \){auth.token}&JsHttpRequest=1-0` },
+                { name: "create_link",  url: `\( {auth.api}type=vod&action=create_link&id= \){channelId}&sn=\( {auth.authData.sn}&token= \){auth.token}&JsHttpRequest=1-0` },
+                { name: "get_vod_uri",  url: `\( {auth.api}type=vod&action=get_vod_uri&id= \){channelId}&sn=\( {auth.authData.sn}&token= \){auth.token}&JsHttpRequest=1-0` },
+                { name: "get_vod_url",  url: `\( {auth.api}type=vod&action=get_vod_url&id= \){channelId}&sn=\( {auth.authData.sn}&token= \){auth.token}&JsHttpRequest=1-0` }
+            ];
 
-                try {
-                    const videoResponse = await axios({
-                        method: 'get',
-                        url: finalUrl,
-                        headers: auth.authData.headers,
-                        responseType: 'stream',
-                        maxRedirects: 5,
-                        timeout: 15000 
-                    });
+            for (const attempt of attempts) {
+                console.log(`[VOD] Tentativa: ${attempt.name}`);
+                const linkRes = await axios.get(attempt.url, { 
+                    headers: auth.authData.headers,
+                    timeout: 15000 
+                });
+                rawResponse = linkRes.data;
 
-                    res.setHeader("Access-Control-Allow-Origin", "*");
-                    res.setHeader("Content-Type", videoResponse.headers['content-type'] || (type === "tv" ? "video/mp2t" : "video/mp4"));
-                    videoResponse.data.pipe(res);
+                streamUrl = 
+                    linkRes.data?.js?.cmd || 
+                    linkRes.data?.js?.data || 
+                    linkRes.data?.data?.cmd || 
+                    linkRes.data?.data?.url || 
+                    linkRes.data?.js?.url || 
+                    linkRes.data?.cmd || 
+                    linkRes.data?.url ||
+                    (typeof linkRes.data?.js === 'string' ? linkRes.data.js : null);
 
-                } catch (vidErr) {
-                    console.log("[ERRO STREAM]:", vidErr.message);
-                    res.status(500).end();
+                if (typeof streamUrl === 'string' && streamUrl.length > 40 && !streamUrl.includes('/.') && !streamUrl.includes('undefined')) {
+                    console.log(`[VOD] ✅ Link obtido com ${attempt.name}`);
+                    break;
                 }
-            } else {
-                console.log(`[AVISO] O link não é HTTP válido após limpeza:`, finalUrl);
-                res.status(404).end();
+                streamUrl = null;
             }
+
+            if (!streamUrl && rawResponse) {
+                console.error("[ERRO VOD] Nenhuma tentativa funcionou. Resposta completa do Stalker:", JSON.stringify(rawResponse, null, 2));
+            }
+        } 
+        else {
+            // TV (já funcionava)
+            const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
+            const tvUrl = `\( {auth.api}type=itv&action=create_link&cmd= \){cmd}&sn=\( {auth.authData.sn}&token= \){auth.token}&JsHttpRequest=1-0`;
+            const linkRes = await axios.get(tvUrl, { headers: auth.authData.headers });
+            streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
+        }
+
+        if (typeof streamUrl === 'string' && streamUrl.length > 30) {
+            let finalUrl = streamUrl
+                .replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/i, "")
+                .replace(/([^:])(\/\/+)/g, '$1/')                    // corrige http://porta//
+                .replace(/\/\.(\?play_token=)/gi, `/${channelId}$1`) // <--- CORREÇÃO ESPECÍFICA para elrinconcito.ath.cx
+                .replace(/undefined/g, '')
+                .trim();
+
+            console.log(`[PROXY] Link Final gerado para ${type}: ${finalUrl}`);
+
+            const videoResponse = await axios({
+                method: 'get',
+                url: finalUrl,
+                headers: auth.authData.headers,
+                responseType: 'stream',
+                maxRedirects: 10,
+                timeout: 30000
+            });
+
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp4");
+            videoResponse.data.pipe(res);
+
         } else {
-            console.log(`[AVISO] Portal não devolveu link válido. Resposta:`, JSON.stringify(linkRes.data));
-            res.status(404).end();
+            console.error(`[ERRO STREAM] Nenhum link válido para ${channelId}`);
+            res.status(404).send("Link de stream não encontrado no servidor Stalker");
         }
     } catch (e) {
-        console.log(`[ERRO PROXY ROUTE]:`, e.message);
-        res.status(500).end();
+        console.error(`[ERRO PROXY]: ${e.message}`);
+        if (e.response) console.error("Status do Stalker:", e.response.status, "Dados:", e.response.data);
+        res.status(500).send("Erro ao processar o vídeo");
     }
 });
 
