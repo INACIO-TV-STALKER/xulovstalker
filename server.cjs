@@ -141,9 +141,8 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
-// PROXY DE VÍDEO - VERSÃO "MAG-SHADOW" (CORREÇÃO 401 E 404)
-const { http: httpFollow, https: httpsFollow } = require('follow-redirects');
 
+// PROXY DE VÍDEO - DETETOR INTELIGENTE (CORREÇÃO DE FECHO SÚBITO)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -174,50 +173,67 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             let finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/i, "").replace(/([^:])(\/\/+)/g, '$1/').trim();
             if (finalUrl.includes('/.?play_token=')) finalUrl = finalUrl.replace('/.', `/${cleanId}`);
 
-            console.log(`[PROXY] Tentando abrir: ${finalUrl}`);
+            console.log(`[PROXY] URL Final: ${finalUrl}`);
 
-            // HEADERS MINIMALISTAS (Exatamente o que uma MAG envia para o vídeo)
             const videoHeaders = {
                 'User-Agent': auth.authData.headers['User-Agent'] || 'StrateM/1.0.0 (compatible; MAG254; Queen; Linux/2.6.23)',
                 'Accept': '*/*',
-                'Range': req.headers.range || 'bytes=0-',
                 'Connection': 'keep-alive',
-                'Referer': configData.url, // Algumas fontes 401 exigem isto
                 'Cookie': auth.authData.headers['Cookie'] || ''
             };
+            
+            // Passamos o tempo do filme que o Stremio quer ver
+            if (req.headers.range) {
+                videoHeaders['Range'] = req.headers.range;
+            }
 
-            const client = finalUrl.startsWith('https') ? httpsFollow : httpFollow;
+            const client = finalUrl.startsWith('https') ? https : http;
 
             const videoReq = client.get(finalUrl, { headers: videoHeaders }, (videoRes) => {
-                if (videoRes.statusCode >= 400) {
-                    console.log(`[ERRO VÍDEO] Status: ${videoRes.statusCode}`);
-                    res.status(videoRes.statusCode).end();
-                    return;
+                console.log(`[INFO PORTAL] Status: ${videoRes.statusCode} | Tipo de Ficheiro: ${videoRes.headers['content-type']}`);
+
+                // 1. SE O PORTAL REDIRECIONAR O VÍDEO (Muito comum em Filmes/Séries)
+                if (videoRes.statusCode >= 300 && videoRes.statusCode < 400 && videoRes.headers.location) {
+                    console.log(`[INFO PORTAL] A Redirecionar o Player para: ${videoRes.headers.location}`);
+                    return res.redirect(videoRes.headers.location);
                 }
 
-                // Configuração para TV Samsung e Stremio
-                res.setHeader('Access-Control-Allow-Origin', '*');
-                res.setHeader('Content-Type', videoRes.headers['content-type'] || 'video/mp2t');
-                
-                if (videoRes.headers['content-length']) res.setHeader('Content-Length', videoRes.headers['content-length']);
-                if (videoRes.headers['content-range']) res.setHeader('Content-Range', videoRes.headers['content-range']);
-                res.setHeader('Accept-Ranges', 'bytes');
+                // 2. SE FOR VÍDEO DIRETO
+                const responseHeaders = {
+                    'Access-Control-Allow-Origin': '*',
+                    'Accept-Ranges': 'bytes',
+                    'Content-Type': videoRes.headers['content-type'] || (type === 'tv' ? 'video/mp2t' : 'video/mp4')
+                };
 
-                res.writeHead(videoRes.statusCode);
+                if (videoRes.headers['content-length']) responseHeaders['Content-Length'] = videoRes.headers['content-length'];
+                if (videoRes.headers['content-range']) responseHeaders['Content-Range'] = videoRes.headers['content-range'];
+
+                // Truque: Se o portal der 200, mas o Stremio pedir Range, forçamos o código 206
+                let finalStatus = videoRes.statusCode;
+                if (finalStatus === 200 && req.headers.range) {
+                    finalStatus = 206;
+                }
+
+                res.writeHead(finalStatus, responseHeaders);
                 videoRes.pipe(res);
             });
 
             videoReq.on('error', (e) => {
-                console.log(`Erro Conexão: ${e.message}`);
+                console.log(`[ERRO LIGAÇÃO] A ligação caiu: ${e.message}`);
                 res.status(500).end();
             });
 
-            req.on('close', () => videoReq.destroy());
+            // Se o utilizador fechar o filme, paramos o download no servidor
+            req.on('close', () => {
+                videoReq.destroy();
+            });
+
         } else {
+            console.log("[PROXY] Portal não devolveu link válido.");
             res.status(404).end();
         }
     } catch (e) {
-        console.log(`Erro Geral: ${e.message}`);
+        console.log(`Erro Geral Proxy: ${e.message}`);
         res.status(500).end();
     }
 });
