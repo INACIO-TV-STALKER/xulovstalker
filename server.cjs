@@ -141,8 +141,7 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
-
-// PROXY DE VÍDEO - DETETOR INTELIGENTE (CORREÇÃO DE FECHO SÚBITO)
+// PROXY DE VÍDEO - LEITOR DE MENSAGENS (DIAGNÓSTICO VOD)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -182,7 +181,6 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
                 'Cookie': auth.authData.headers['Cookie'] || ''
             };
             
-            // Passamos o tempo do filme que o Stremio quer ver
             if (req.headers.range) {
                 videoHeaders['Range'] = req.headers.range;
             }
@@ -190,50 +188,54 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             const client = finalUrl.startsWith('https') ? https : http;
 
             const videoReq = client.get(finalUrl, { headers: videoHeaders }, (videoRes) => {
-                console.log(`[INFO PORTAL] Status: ${videoRes.statusCode} | Tipo de Ficheiro: ${videoRes.headers['content-type']}`);
+                
+                const contentType = videoRes.headers['content-type'] || '';
+                console.log(`[INFO PORTAL] Status: ${videoRes.statusCode} | Tipo: ${contentType}`);
 
-                // 1. SE O PORTAL REDIRECIONAR O VÍDEO (Muito comum em Filmes/Séries)
+                // O NOSSO ESPIÃO: Se o portal enviar JSON ou HTML em vez de vídeo, nós lemos!
+                if (contentType.includes('json') || contentType.includes('text') || contentType.includes('html')) {
+                    let body = '';
+                    videoRes.on('data', chunk => body += chunk);
+                    videoRes.on('end', () => {
+                        console.log(`[MENSAGEM SECRETA DO PORTAL] ${body.substring(0, 500)}`);
+                        res.status(500).end(); // Fechamos porque não é vídeo
+                    });
+                    return;
+                }
+
                 if (videoRes.statusCode >= 300 && videoRes.statusCode < 400 && videoRes.headers.location) {
-                    console.log(`[INFO PORTAL] A Redirecionar o Player para: ${videoRes.headers.location}`);
+                    console.log(`[INFO] Redirecionando player para: ${videoRes.headers.location}`);
                     return res.redirect(videoRes.headers.location);
                 }
 
-                // 2. SE FOR VÍDEO DIRETO
                 const responseHeaders = {
                     'Access-Control-Allow-Origin': '*',
                     'Accept-Ranges': 'bytes',
-                    'Content-Type': videoRes.headers['content-type'] || (type === 'tv' ? 'video/mp2t' : 'video/mp4')
+                    'Content-Type': contentType || (type === 'tv' ? 'video/mp2t' : 'video/mp4')
                 };
 
                 if (videoRes.headers['content-length']) responseHeaders['Content-Length'] = videoRes.headers['content-length'];
                 if (videoRes.headers['content-range']) responseHeaders['Content-Range'] = videoRes.headers['content-range'];
 
-                // Truque: Se o portal der 200, mas o Stremio pedir Range, forçamos o código 206
                 let finalStatus = videoRes.statusCode;
-                if (finalStatus === 200 && req.headers.range) {
-                    finalStatus = 206;
-                }
+                if (finalStatus === 200 && req.headers.range) finalStatus = 206;
 
                 res.writeHead(finalStatus, responseHeaders);
                 videoRes.pipe(res);
             });
 
             videoReq.on('error', (e) => {
-                console.log(`[ERRO LIGAÇÃO] A ligação caiu: ${e.message}`);
+                console.log(`[ERRO] ${e.message}`);
                 res.status(500).end();
             });
 
-            // Se o utilizador fechar o filme, paramos o download no servidor
-            req.on('close', () => {
-                videoReq.destroy();
-            });
+            req.on('close', () => videoReq.destroy());
 
         } else {
-            console.log("[PROXY] Portal não devolveu link válido.");
             res.status(404).end();
         }
     } catch (e) {
-        console.log(`Erro Geral Proxy: ${e.message}`);
+        console.log(`Erro Geral: ${e.message}`);
         res.status(500).end();
     }
 });
