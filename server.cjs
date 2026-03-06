@@ -142,7 +142,7 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
 // =============================================
-// PROXY DE VÍDEO (Versão 3.0 - Corrigida para elrinconcito + portais custom)
+// PROXY DE VÍDEO (Corrigido Sintaxe + Séries)
 // =============================================
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
@@ -158,32 +158,37 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     try {
         let streamUrl = null;
         let rawResponse = null;
+        
+        // RECUPERADO: Descodifica o Base64 do Stremio para as séries funcionarem
+        let cleanId = decodeURIComponent(channelId);
 
         if (type === "movie" || type === "series") {
-            console.log(`[VOD] Tentando obter stream para ID ${channelId} (tipo: ${type})`);
+            console.log(`[VOD] Tentando obter stream para ID ${cleanId} (tipo: ${type})`);
 
+            // CORRIGIDO: Os símbolos $ nas variáveis e adicionada a tentativa "cmd" essencial para Séries
             const attempts = [
-                { name: "get_vod_link", url: `\( {auth.api}type=vod&action=get_vod_link&id= \){channelId}&sn=\( {auth.authData.sn}&token= \){auth.token}&JsHttpRequest=1-0` },
-                { name: "create_link",  url: `\( {auth.api}type=vod&action=create_link&id= \){channelId}&sn=\( {auth.authData.sn}&token= \){auth.token}&JsHttpRequest=1-0` },
-                { name: "get_vod_uri",  url: `\( {auth.api}type=vod&action=get_vod_uri&id= \){channelId}&sn=\( {auth.authData.sn}&token= \){auth.token}&JsHttpRequest=1-0` },
-                { name: "get_vod_url",  url: `\( {auth.api}type=vod&action=get_vod_url&id= \){channelId}&sn=\( {auth.authData.sn}&token= \){auth.token}&JsHttpRequest=1-0` }
+                { name: "create_link_cmd", url: `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0` },
+                { name: "get_vod_link", url: `${auth.api}type=vod&action=get_vod_link&id=${cleanId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0` },
+                { name: "create_link",  url: `${auth.api}type=vod&action=create_link&id=${cleanId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0` },
+                { name: "get_vod_uri",  url: `${auth.api}type=vod&action=get_vod_uri&id=${cleanId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0` },
+                { name: "get_vod_url",  url: `${auth.api}type=vod&action=get_vod_url&id=${cleanId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0` }
             ];
 
             for (const attempt of attempts) {
                 console.log(`[VOD] Tentativa: ${attempt.name}`);
-                const linkRes = await axios.get(attempt.url, { 
+                const linkRes = await axios.get(attempt.url, {
                     headers: auth.authData.headers,
-                    timeout: 15000 
+                    timeout: 15000
                 });
                 rawResponse = linkRes.data;
 
-                streamUrl = 
-                    linkRes.data?.js?.cmd || 
-                    linkRes.data?.js?.data || 
-                    linkRes.data?.data?.cmd || 
-                    linkRes.data?.data?.url || 
-                    linkRes.data?.js?.url || 
-                    linkRes.data?.cmd || 
+                streamUrl =
+                    linkRes.data?.js?.cmd ||
+                    linkRes.data?.js?.data ||
+                    linkRes.data?.data?.cmd ||
+                    linkRes.data?.data?.url ||
+                    linkRes.data?.js?.url ||
+                    linkRes.data?.cmd ||
                     linkRes.data?.url ||
                     (typeof linkRes.data?.js === 'string' ? linkRes.data.js : null);
 
@@ -195,13 +200,13 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             }
 
             if (!streamUrl && rawResponse) {
-                console.error("[ERRO VOD] Nenhuma tentativa funcionou. Resposta completa do Stalker:", JSON.stringify(rawResponse, null, 2));
+                console.error("[ERRO VOD] Nenhuma tentativa funcionou.");
             }
-        } 
+        }
         else {
-            // TV (já funcionava)
-            const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
-            const tvUrl = `\( {auth.api}type=itv&action=create_link&cmd= \){cmd}&sn=\( {auth.authData.sn}&token= \){auth.token}&JsHttpRequest=1-0`;
+            // TV: CORRIGIDO os símbolos $ nas variáveis
+            const cmd = encodeURIComponent(`ffrt http://localhost/ch/${cleanId}`);
+            const tvUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             const linkRes = await axios.get(tvUrl, { headers: auth.authData.headers });
             streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
         }
@@ -209,8 +214,8 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         if (typeof streamUrl === 'string' && streamUrl.length > 30) {
             let finalUrl = streamUrl
                 .replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/i, "")
-                .replace(/([^:])(\/\/+)/g, '$1/')                    // corrige http://porta//
-                .replace(/\/\.(\?play_token=)/gi, `/${channelId}$1`) // <--- CORREÇÃO ESPECÍFICA para elrinconcito.ath.cx
+                .replace(/([^:])(\/\/+)/g, '$1/')                    
+                .replace(/\/\.(\?play_token=)/gi, `/${cleanId}$1`) // A tua correção elrinconcito
                 .replace(/undefined/g, '')
                 .trim();
 
@@ -231,11 +236,10 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
         } else {
             console.error(`[ERRO STREAM] Nenhum link válido para ${channelId}`);
-            res.status(404).send("Link de stream não encontrado no servidor Stalker");
+            res.status(404).send("Link não encontrado");
         }
     } catch (e) {
         console.error(`[ERRO PROXY]: ${e.message}`);
-        if (e.response) console.error("Status do Stalker:", e.response.status, "Dados:", e.response.data);
         res.status(500).send("Erro ao processar o vídeo");
     }
 });
