@@ -141,7 +141,9 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
-// PROXY DE VÍDEO - FOCO TOTAL EM IDENTIDADE MAG (CORREÇÃO 401)
+// PROXY DE VÍDEO - VERSÃO "MAG-SHADOW" (CORREÇÃO 401 E 404)
+const { http: httpFollow, https: httpsFollow } = require('follow-redirects');
+
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -155,14 +157,9 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
     try {
         let cleanId = decodeURIComponent(channelId);
-        let sUrl = "";
-
-        if (type === "movie" || type === "series") {
-            sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-        } else {
-            const cmd = encodeURIComponent(`ffrt http://localhost/ch/${cleanId}`);
-            sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-        }
+        let sUrl = (type === "movie" || type === "series")
+            ? `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`
+            : `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent('ffrt http://localhost/ch/'+cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
 
         const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 10000 });
         let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
@@ -179,44 +176,43 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
             console.log(`[PROXY] Tentando abrir: ${finalUrl}`);
 
-            // USAMOS O HTTP NATIVO PARA EVITAR HEADERS EXTRA DO AXIOS
-            const http = require('http');
-            
-            // Clonamos os headers EXATOS da autenticação
-            const videoHeaders = { ...auth.authData.headers };
-            
-            // Adicionamos o Range que o Stremio pede (essencial para VOD)
-            if (req.headers.range) {
-                videoHeaders['Range'] = req.headers.range;
-            }
+            // HEADERS MINIMALISTAS (Exatamente o que uma MAG envia para o vídeo)
+            const videoHeaders = {
+                'User-Agent': auth.authData.headers['User-Agent'] || 'StrateM/1.0.0 (compatible; MAG254; Queen; Linux/2.6.23)',
+                'Accept': '*/*',
+                'Range': req.headers.range || 'bytes=0-',
+                'Connection': 'keep-alive',
+                'Referer': configData.url, // Algumas fontes 401 exigem isto
+                'Cookie': auth.authData.headers['Cookie'] || ''
+            };
 
-            const videoReq = http.get(finalUrl, { headers: videoHeaders }, (videoRes) => {
-                // Se o servidor de vídeo ainda assim der erro, logamos aqui
+            const client = finalUrl.startsWith('https') ? httpsFollow : httpFollow;
+
+            const videoReq = client.get(finalUrl, { headers: videoHeaders }, (videoRes) => {
                 if (videoRes.statusCode >= 400) {
-                    console.log(`[ERRO VÍDEO] Servidor respondeu com: ${videoRes.statusCode}`);
+                    console.log(`[ERRO VÍDEO] Status: ${videoRes.statusCode}`);
                     res.status(videoRes.statusCode).end();
                     return;
                 }
 
-                // Repassamos os headers de volta para o Stremio
-                res.setHeader("Access-Control-Allow-Origin", "*");
-                res.setHeader("Content-Type", videoRes.headers['content-type'] || "video/mp4");
+                // Configuração para TV Samsung e Stremio
+                res.setHeader('Access-Control-Allow-Origin', '*');
+                res.setHeader('Content-Type', videoRes.headers['content-type'] || 'video/mp2t');
                 
-                if (videoRes.headers['content-length']) res.setHeader("Content-Length", videoRes.headers['content-length']);
-                if (videoRes.headers['content-range']) res.setHeader("Content-Range", videoRes.headers['content-range']);
-                if (videoRes.headers['accept-ranges']) res.setHeader("Accept-Ranges", "bytes");
+                if (videoRes.headers['content-length']) res.setHeader('Content-Length', videoRes.headers['content-length']);
+                if (videoRes.headers['content-range']) res.setHeader('Content-Range', videoRes.headers['content-range']);
+                res.setHeader('Accept-Ranges', 'bytes');
 
                 res.writeHead(videoRes.statusCode);
                 videoRes.pipe(res);
             });
 
             videoReq.on('error', (e) => {
-                console.log(`Erro de Conexão: ${e.message}`);
+                console.log(`Erro Conexão: ${e.message}`);
                 res.status(500).end();
             });
 
             req.on('close', () => videoReq.destroy());
-
         } else {
             res.status(404).end();
         }
