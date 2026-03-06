@@ -141,7 +141,7 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
-// PROXY DE VÍDEO - LEITOR DE MENSAGENS (DIAGNÓSTICO VOD)
+// PROXY DE VÍDEO - VERSÃO BLINDADA (AUTO-REAUTH + MAG HEADERS)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -150,68 +150,77 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const configData = lists[listIdx];
     if (!configData) return res.status(400).end();
 
-    const auth = await addon.authenticate(configData);
-    if (!auth) return res.status(401).end();
+    // Função interna para tentar abrir o vídeo
+    const tryStream = async (isRetry = false) => {
+        const auth = await addon.authenticate(configData, isRetry); // Forçamos refresh se for retry
+        if (!auth) return res.status(401).end();
 
-    try {
-        let cleanId = decodeURIComponent(channelId);
-        let sUrl = (type === "movie" || type === "series")
-            ? `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`
-            : `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent('ffrt http://localhost/ch/'+cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+        try {
+            let cleanId = decodeURIComponent(channelId);
+            let sUrl = (type === "movie" || type === "series")
+                ? `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`
+                : `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent('ffrt http://localhost/ch/'+cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
 
-        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 10000 });
-        let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
+            const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 10000 });
+            let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
 
-        if (!streamUrl && type === "movie") {
-            const altUrl = `${auth.api}type=vod&action=get_vod_uri&id=${cleanId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-            const altRes = await axios.get(altUrl, { headers: auth.authData.headers, timeout: 10000 });
-            streamUrl = altRes.data?.js?.cmd || altRes.data?.js;
-        }
+            if (!streamUrl && type === "movie") {
+                const altUrl = `${auth.api}type=vod&action=get_vod_uri&id=${cleanId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                const altRes = await axios.get(altUrl, { headers: auth.authData.headers, timeout: 10000 });
+                streamUrl = altRes.data?.js?.cmd || altRes.data?.js;
+            }
 
-        if (typeof streamUrl === 'string') {
+            if (typeof streamUrl !== 'string') return res.status(404).end();
+
             let finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/i, "").replace(/([^:])(\/\/+)/g, '$1/').trim();
             if (finalUrl.includes('/.?play_token=')) finalUrl = finalUrl.replace('/.', `/${cleanId}`);
 
-            console.log(`[PROXY] URL Final: ${finalUrl}`);
+            console.log(`[PROXY] Abrindo (${isRetry ? 'RETRY' : 'OPEN'}): ${finalUrl}`);
 
+            // HEADERS AVANÇADOS DE BOX MAG
             const videoHeaders = {
-                'User-Agent': auth.authData.headers['User-Agent'] || 'StrateM/1.0.0 (compatible; MAG254; Queen; Linux/2.6.23)',
+                'User-Agent': 'StrateM/1.0.0 (compatible; MAG254; Queen; Linux/2.6.23)',
+                'X-User-Agent': 'Model: MAG254; Version: 2.20.0-r19-254',
                 'Accept': '*/*',
+                'Referer': configData.url,
                 'Connection': 'keep-alive',
                 'Cookie': auth.authData.headers['Cookie'] || ''
             };
             
-            if (req.headers.range) {
-                videoHeaders['Range'] = req.headers.range;
-            }
+            if (req.headers.range) videoHeaders['Range'] = req.headers.range;
 
             const client = finalUrl.startsWith('https') ? https : http;
 
             const videoReq = client.get(finalUrl, { headers: videoHeaders }, (videoRes) => {
-                
                 const contentType = videoRes.headers['content-type'] || '';
-                console.log(`[INFO PORTAL] Status: ${videoRes.statusCode} | Tipo: ${contentType}`);
 
-                // O NOSSO ESPIÃO: Se o portal enviar JSON ou HTML em vez de vídeo, nós lemos!
-                if (contentType.includes('json') || contentType.includes('text') || contentType.includes('html')) {
+                // Se o portal responder com JSON (Erro escondido)
+                if (contentType.includes('json') || contentType.includes('text/html')) {
                     let body = '';
                     videoRes.on('data', chunk => body += chunk);
                     videoRes.on('end', () => {
-                        console.log(`[MENSAGEM SECRETA DO PORTAL] ${body.substring(0, 500)}`);
-                        res.status(500).end(); // Fechamos porque não é vídeo
+                        console.log(`[PORTAL RES] ${body.substring(0, 100)}`);
+                        // Se o token falhou e ainda não tentámos de novo, fazemos re-auth
+                        if (!isRetry && (body.includes('TOKEN_INVALID') || body.includes('expired'))) {
+                            console.log("[PROXY] Token falhou. A tentar re-autenticação automática...");
+                            return tryStream(true); 
+                        }
+                        res.status(500).end();
                     });
                     return;
                 }
 
+                // Seguir redirecionamentos (302)
                 if (videoRes.statusCode >= 300 && videoRes.statusCode < 400 && videoRes.headers.location) {
-                    console.log(`[INFO] Redirecionando player para: ${videoRes.headers.location}`);
                     return res.redirect(videoRes.headers.location);
                 }
 
+                // Configuração de Resposta para Samsung
                 const responseHeaders = {
                     'Access-Control-Allow-Origin': '*',
                     'Accept-Ranges': 'bytes',
-                    'Content-Type': contentType || (type === 'tv' ? 'video/mp2t' : 'video/mp4')
+                    'Content-Type': contentType || (type === 'tv' ? 'video/mp2t' : 'video/mp4'),
+                    'Cache-Control': 'no-cache'
                 };
 
                 if (videoRes.headers['content-length']) responseHeaders['Content-Length'] = videoRes.headers['content-length'];
@@ -231,13 +240,13 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
             req.on('close', () => videoReq.destroy());
 
-        } else {
-            res.status(404).end();
+        } catch (e) {
+            console.log(`Erro Proxy: ${e.message}`);
+            res.status(500).end();
         }
-    } catch (e) {
-        console.log(`Erro Geral: ${e.message}`);
-        res.status(500).end();
-    }
+    };
+
+    tryStream(); // Inicia a tentativa
 });
 
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Tizen Addon Online na porta ${PORT}`));
