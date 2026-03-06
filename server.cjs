@@ -141,11 +141,10 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
-
-// O SEGREDO PARA A TIZEN TV - ADICIONADO: Suporte para VOD (Filmes/Séries)
+// PROXY DE VÍDEO (Corrigido para Erro 404, Connect e Range)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
-    const type = req.query.type || 'tv'; // Apanha o type (tv, movie, series)
+    const type = req.query.type || 'tv';
 
     const lists = addon.parseConfig(config);
     const configData = lists[listIdx];
@@ -155,46 +154,94 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     if (!auth) return res.status(401).end();
 
     try {
+        let cleanId = decodeURIComponent(channelId);
         let sUrl = "";
-        
-        // Se for filme ou série, o Stalker pede como 'vod' e enviamos o cmd recebido
+
+        // Ação para obter o link dependendo se é TV ou Filme/Série
         if (type === "movie" || type === "series") {
-            sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(channelId)}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+            sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
         } else {
-            // LÓGICA DE TV ORIGINAL INTACTA
-            const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
-            sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+            const cmd = encodeURIComponent(`ffrt http://localhost/ch/${cleanId}`);
+            sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
         }
 
-        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
+        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 10000 });
         let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
-        
+
+        // Tentativa de segurança para Filmes caso a primeira falhe
+        if (!streamUrl && type === "movie") {
+            const altUrl = `${auth.api}type=vod&action=get_vod_uri&id=${cleanId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+            const altRes = await axios.get(altUrl, { headers: auth.authData.headers, timeout: 10000 });
+            streamUrl = altRes.data?.js?.cmd || altRes.data?.js;
+        }
+
         if (typeof streamUrl === 'string') {
-            const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-            console.log(`[PROXY] Tizen a pedir ${type} ID ${channelId} da lista ${listIdx}...`);
+            // LIMPEZA DO LINK (Isto resolve o Erro 404)
+            let finalUrl = streamUrl
+                .replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/i, "")
+                .replace(/([^:])(\/\/+)/g, '$1/')
+                .trim();
+
+            // Substitui o "/." pelo ID correto do filme (resolve o erro dos portais Dragon/SBS)
+            if (finalUrl.includes('/.?play_token=')) {
+                finalUrl = finalUrl.replace('/.', `/${cleanId}`);
+            }
+
+            console.log(`[PROXY] Tizen a pedir ${type} ID ${cleanId} da lista ${listIdx}...`);
+            console.log(`[PROXY] URL Final Limpa: ${finalUrl}`);
 
             try {
+                // PREPARAÇÃO DOS CABEÇALHOS (Resolve o "saltar fora")
+                const requestHeaders = { ...auth.authData.headers };
+                
+                // Se o Stremio pedir um pedaço específico do filme, repassamos para o portal
+                if (req.headers.range) {
+                    requestHeaders['Range'] = req.headers.range;
+                }
+
                 const videoResponse = await axios({
                     method: 'get',
                     url: finalUrl,
-                    headers: auth.authData.headers,
+                    headers: requestHeaders,
                     responseType: 'stream',
-                    maxRedirects: 5
+                    maxRedirects: 10,
+                    timeout: 30000 // Resolve o erro de "connect"
                 });
 
+                // Repassa para o Stremio os dados do tamanho do vídeo para ele não crashar
                 res.setHeader("Access-Control-Allow-Origin", "*");
-                res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp2t");
+                res.setHeader("Content-Type", videoResponse.headers['content-type'] || (type === 'tv' ? 'video/mp2t' : 'video/mp4'));
+                res.setHeader("Accept-Ranges", "bytes");
+
+                if (videoResponse.headers['content-length']) {
+                    res.setHeader("Content-Length", videoResponse.headers['content-length']);
+                }
+                
+                if (videoResponse.headers['content-range']) {
+                    res.setHeader("Content-Range", videoResponse.headers['content-range']);
+                    res.status(206); // 206 significa "Conteúdo Parcial", crucial para filmes
+                } else {
+                    res.status(200);
+                }
+
+                // Injeta o vídeo para o Stremio
                 videoResponse.data.pipe(res);
 
+                // Quando o utilizador fecha o filme, fechamos a ligação para não esgotar o servidor
+                req.on('close', () => {
+                    videoResponse.data.destroy();
+                });
+
             } catch (vidErr) {
-                console.log("Erro no stream:", vidErr.message);
+                console.log(`Erro no stream: ${vidErr.message}`);
                 res.status(500).end();
             }
-
         } else {
+            console.log("[PROXY] Portal não devolveu link de vídeo.");
             res.status(404).end();
         }
     } catch (e) {
+        console.log(`Erro Geral Proxy: ${e.message}`);
         res.status(500).end();
     }
 });
