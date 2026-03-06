@@ -141,7 +141,7 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
-// PROXY DE VÍDEO - VERSÃO SESSION-SYNC (CORREÇÃO DE TOKEN INVÁLIDO)
+// PROXY DE VÍDEO - VERSÃO TÚNEL (SEGUE REDIRECIONAMENTOS INTERNAMENTE)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -150,107 +150,71 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const configData = lists[listIdx];
     if (!configData) return res.status(400).end();
 
-    const tryStream = async (isRetry = false) => {
-        // 1. Autenticação inicial
-        const auth = await addon.authenticate(configData, isRetry);
-        if (!auth) return res.status(401).end();
+    const fetchStream = async (targetUrl, currentCookies, retryCount = 0) => {
+        if (retryCount > 3) return res.status(500).end(); // Evita loops infinitos
 
-        try {
-            let cleanId = decodeURIComponent(channelId);
-            let sUrl = (type === "movie" || type === "series")
-                ? `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`
-                : `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent('ffrt http://localhost/ch/'+cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+        const auth = await addon.authenticate(configData);
+        const videoHeaders = {
+            'User-Agent': 'StrateM/1.0.0 (compatible; MAG254; Queen; Linux/2.6.23)',
+            'X-User-Agent': 'Model: MAG254; Version: 2.20.0-r19-254',
+            'Referer': configData.url,
+            'Cookie': currentCookies || auth.authData.headers['Cookie'],
+            'Connection': 'keep-alive'
+        };
+        if (req.headers.range) videoHeaders['Range'] = req.headers.range;
 
-            // IMPORTANTE: Capturamos os headers da resposta do portal para apanhar novas cookies
-            const linkRes = await axios.get(sUrl, { 
-                headers: auth.authData.headers, 
-                timeout: 10000,
-                validateStatus: false 
-            });
+        const client = targetUrl.startsWith('https') ? https : http;
 
-            // Extraímos as cookies que o portal acabou de nos dar
-            const rawCookies = linkRes.headers['set-cookie'] || [];
-            const newCookies = rawCookies.map(c => c.split(';')[0]).join('; ');
-            
-            // Combinamos com as cookies que já tínhamos
-            const finalCookies = [auth.authData.headers['Cookie'], newCookies].filter(Boolean).join('; ');
-
-            let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
-
-            if (typeof streamUrl !== 'string' || !streamUrl) {
-                console.log("[PROXY] Portal não devolveu link de vídeo.");
-                return res.status(404).end();
+        client.get(targetUrl, { headers: videoHeaders }, (videoRes) => {
+            // SE FOR REDIRECIONAMENTO (302) - O PROXY SEGUE, NÃO O PLAYER
+            if (videoRes.statusCode >= 300 && videoRes.statusCode < 400 && videoRes.headers.location) {
+                let newUrl = videoRes.headers.location;
+                if (!newUrl.startsWith('http')) {
+                    const parsed = new URL(targetUrl);
+                    newUrl = `${parsed.protocol}//${parsed.host}${newUrl}`;
+                }
+                console.log(`[TÚNEL] Seguindo redirecionamento para: ${newUrl}`);
+                return fetchStream(newUrl, videoHeaders.Cookie, retryCount + 1);
             }
 
-            let finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/i, "").replace(/([^:])(\/\/+)/g, '$1/').trim();
-            if (finalUrl.includes('/.?play_token=')) finalUrl = finalUrl.replace('/.', `/${cleanId}`);
+            // SE FOR ERRO DE TOKEN
+            const contentType = videoRes.headers['content-type'] || '';
+            if (videoRes.statusCode === 401 || contentType.includes('json')) {
+                console.log("[TÚNEL] Erro de Token/Sessão detetado.");
+                return res.status(401).end();
+            }
 
-            console.log(`[PROXY] Abrindo: ${finalUrl}`);
-
-            const videoHeaders = {
-                'User-Agent': 'StrateM/1.0.0 (compatible; MAG254; Queen; Linux/2.6.23)',
-                'X-User-Agent': 'Model: MAG254; Version: 2.20.0-r19-254',
-                'Accept': '*/*',
-                'Referer': configData.url,
-                'Cookie': finalCookies, // AQUI ESTÁ A CHAVE: Passamos a sessão exata
-                'Connection': 'keep-alive'
-            };
-            
-            if (req.headers.range) videoHeaders['Range'] = req.headers.range;
-
-            const client = finalUrl.startsWith('https') ? https : http;
-
-            const videoReq = client.get(finalUrl, { headers: videoHeaders }, (videoRes) => {
-                const contentType = videoRes.headers['content-type'] || '';
-
-                // Se ainda assim der erro de Token, tentamos o RETRY uma única vez
-                if (videoRes.statusCode === 401 || contentType.includes('json')) {
-                    let body = '';
-                    videoRes.on('data', chunk => body += chunk);
-                    videoRes.on('end', () => {
-                        console.log(`[RESPOSTA] ${body.substring(0, 100)}`);
-                        if (!isRetry) {
-                            console.log("[PROXY] Token Inválido. Tentando Refresh total de sessão...");
-                            return tryStream(true);
-                        }
-                        res.status(401).send("Erro de Token no Portal");
-                    });
-                    return;
-                }
-
-                // Se o portal mandar redirecionar, a Samsung tem de seguir
-                if (videoRes.statusCode >= 300 && videoRes.statusCode < 400 && videoRes.headers.location) {
-                    console.log(`[REDIR] Seguindo para: ${videoRes.headers.location}`);
-                    return res.redirect(videoRes.headers.location);
-                }
-
-                // Headers de sucesso para a TV Samsung
-                res.writeHead(videoRes.statusCode === 200 && req.headers.range ? 206 : videoRes.statusCode, {
-                    'Access-Control-Allow-Origin': '*',
-                    'Content-Type': contentType || (type === 'tv' ? 'video/mp2t' : 'video/mp4'),
-                    'Accept-Ranges': 'bytes',
-                    'Content-Length': videoRes.headers['content-length'],
-                    'Content-Range': videoRes.headers['content-range'],
-                    'Cache-Control': 'no-cache'
-                });
-
-                videoRes.pipe(res);
+            // ENTREGA O VÍDEO DIRETAMENTE
+            res.writeHead(videoRes.statusCode, {
+                'Access-Control-Allow-Origin': '*',
+                'Content-Type': contentType || 'video/mp4',
+                'Accept-Ranges': 'bytes',
+                'Content-Length': videoRes.headers['content-length'],
+                'Content-Range': videoRes.headers['content-range']
             });
-
-            videoReq.on('error', (e) => {
-                console.log(`[ERRO SOCKET] ${e.message}`);
-                res.status(500).end();
-            });
-
-            req.on('close', () => videoReq.destroy());
-
-        } catch (e) {
-            console.log(`[ERRO GERAL] ${e.message}`);
-            res.status(500).end();
-        }
+            videoRes.pipe(res);
+        }).on('error', (e) => res.status(500).end());
     };
 
-    tryStream();
+    // Início do processo
+    try {
+        let cleanId = decodeURIComponent(channelId);
+        const auth = await addon.authenticate(configData);
+        let sUrl = (type === "movie" || type === "series")
+            ? `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`
+            : `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent('ffrt http://localhost/ch/'+cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+
+        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
+        let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
+
+        if (streamUrl) {
+            let finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/i, "").trim();
+            if (finalUrl.includes('/.?play_token=')) finalUrl = finalUrl.replace('/.', `/${cleanId}`);
+            fetchStream(finalUrl);
+        } else {
+            res.status(404).end();
+        }
+    } catch (e) { res.status(500).end(); }
 });
 
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Tizen Addon Online na porta ${PORT}`));
