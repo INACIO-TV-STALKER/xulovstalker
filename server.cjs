@@ -141,7 +141,7 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
-// PROXY DE VÍDEO - VERSÃO TÚNEL (SEGUE REDIRECIONAMENTOS INTERNAMENTE)
+// PROXY DE VÍDEO - VERSÃO TÚNEL BLINDADA (CORREÇÃO DE HEADERS + SESSÃO)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -151,71 +151,101 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     if (!configData) return res.status(400).end();
 
     const fetchStream = async (targetUrl, currentCookies, retryCount = 0) => {
-        if (retryCount > 3) return res.status(500).end(); // Evita loops infinitos
+        if (retryCount > 3) {
+            console.log("[TÚNEL] Limite de redirecionamentos atingido.");
+            return res.status(500).end();
+        }
 
         const auth = await addon.authenticate(configData);
+        if (!auth) return res.status(401).end();
+
         const videoHeaders = {
             'User-Agent': 'StrateM/1.0.0 (compatible; MAG254; Queen; Linux/2.6.23)',
             'X-User-Agent': 'Model: MAG254; Version: 2.20.0-r19-254',
             'Referer': configData.url,
-            'Cookie': currentCookies || auth.authData.headers['Cookie'],
+            'Cookie': currentCookies || auth.authData.headers['Cookie'] || '',
             'Connection': 'keep-alive'
         };
+        
         if (req.headers.range) videoHeaders['Range'] = req.headers.range;
 
         const client = targetUrl.startsWith('https') ? https : http;
 
-        client.get(targetUrl, { headers: videoHeaders }, (videoRes) => {
-            // SE FOR REDIRECIONAMENTO (302) - O PROXY SEGUE, NÃO O PLAYER
+        const videoReq = client.get(targetUrl, { headers: videoHeaders }, (videoRes) => {
+            
+            // 1. CAPTURAR NOVAS COOKIES (Se o servidor enviar durante o redirecionamento)
+            const setCookie = videoRes.headers['set-cookie'];
+            let updatedCookies = currentCookies;
+            if (setCookie) {
+                const newCookies = setCookie.map(c => c.split(';')[0]).join('; ');
+                updatedCookies = updatedCookies ? `${updatedCookies}; ${newCookies}` : newCookies;
+            }
+
+            // 2. SE FOR REDIRECIONAMENTO (302/301)
             if (videoRes.statusCode >= 300 && videoRes.statusCode < 400 && videoRes.headers.location) {
                 let newUrl = videoRes.headers.location;
                 if (!newUrl.startsWith('http')) {
                     const parsed = new URL(targetUrl);
                     newUrl = `${parsed.protocol}//${parsed.host}${newUrl}`;
                 }
-                console.log(`[TÚNEL] Seguindo redirecionamento para: ${newUrl}`);
-                return fetchStream(newUrl, videoHeaders.Cookie, retryCount + 1);
+                console.log(`[TÚNEL] Redirecionando internamente para: ${newUrl}`);
+                return fetchStream(newUrl, updatedCookies, retryCount + 1);
             }
 
-            // SE FOR ERRO DE TOKEN
+            // 3. SE FOR ERRO DE TOKEN OU CONTEÚDO NÃO VÍDEO
             const contentType = videoRes.headers['content-type'] || '';
-            if (videoRes.statusCode === 401 || contentType.includes('json')) {
-                console.log("[TÚNEL] Erro de Token/Sessão detetado.");
-                return res.status(401).end();
+            if (videoRes.statusCode === 401 || contentType.includes('json') || contentType.includes('text/html')) {
+                console.log(`[TÚNEL] Erro de Acesso: Status ${videoRes.statusCode} | Tipo: ${contentType}`);
+                return res.status(videoRes.statusCode).end();
             }
 
-            // ENTREGA O VÍDEO DIRETAMENTE
-            res.writeHead(videoRes.statusCode, {
+            // 4. PREPARAR HEADERS DE RESPOSTA (SEM VALORES UNDEFINED)
+            const responseHeaders = {
                 'Access-Control-Allow-Origin': '*',
-                'Content-Type': contentType || 'video/mp4',
+                'Content-Type': contentType || (type === 'tv' ? 'video/mp2t' : 'video/mp4'),
                 'Accept-Ranges': 'bytes',
-                'Content-Length': videoRes.headers['content-length'],
-                'Content-Range': videoRes.headers['content-range']
-            });
+                'Cache-Control': 'no-cache'
+            };
+
+            // SÓ ADICIONA SE EXISTIREM (Para evitar o crash ERR_HTTP_INVALID_HEADER_VALUE)
+            if (videoRes.headers['content-length']) responseHeaders['Content-Length'] = videoRes.headers['content-length'];
+            if (videoRes.headers['content-range']) responseHeaders['Content-Range'] = videoRes.headers['content-range'];
+
+            res.writeHead(videoRes.statusCode, responseHeaders);
             videoRes.pipe(res);
-        }).on('error', (e) => res.status(500).end());
+        });
+
+        videoReq.on('error', (e) => {
+            console.log(`[TÚNEL ERRO] ${e.message}`);
+            if (!res.headersSent) res.status(500).end();
+        });
     };
 
-    // Início do processo
     try {
         let cleanId = decodeURIComponent(channelId);
         const auth = await addon.authenticate(configData);
+        if (!auth) return res.status(401).end();
+
         let sUrl = (type === "movie" || type === "series")
             ? `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`
             : `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent('ffrt http://localhost/ch/'+cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
 
-        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
+        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 10000 });
         let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
 
-        if (streamUrl) {
+        if (typeof streamUrl === 'string') {
             let finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/i, "").trim();
             if (finalUrl.includes('/.?play_token=')) finalUrl = finalUrl.replace('/.', `/${cleanId}`);
-            fetchStream(finalUrl);
+            
+            console.log(`[PROXY] Iniciando Túnel para: ${finalUrl}`);
+            fetchStream(finalUrl, auth.authData.headers['Cookie']);
         } else {
             res.status(404).end();
         }
-    } catch (e) { res.status(500).end(); }
+    } catch (e) {
+        console.log(`[PROXY ERRO GERAL] ${e.message}`);
+        if (!res.headersSent) res.status(500).end();
+    }
 });
 
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Tizen Addon Online na porta ${PORT}`));
-
