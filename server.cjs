@@ -141,7 +141,7 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
-// PROXY DE VÍDEO (Corrigido para 401 Unauthorized)
+// PROXY DE VÍDEO - FOCO TOTAL EM IDENTIDADE MAG (CORREÇÃO 401)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -174,73 +174,54 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         }
 
         if (typeof streamUrl === 'string') {
-            let finalUrl = streamUrl
-                .replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/i, "")
-                .replace(/([^:])(\/\/+)/g, '$1/')
-                .trim();
+            let finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/i, "").replace(/([^:])(\/\/+)/g, '$1/').trim();
+            if (finalUrl.includes('/.?play_token=')) finalUrl = finalUrl.replace('/.', `/${cleanId}`);
 
-            if (finalUrl.includes('/.?play_token=')) {
-                finalUrl = finalUrl.replace('/.', `/${cleanId}`);
+            console.log(`[PROXY] Tentando abrir: ${finalUrl}`);
+
+            // USAMOS O HTTP NATIVO PARA EVITAR HEADERS EXTRA DO AXIOS
+            const http = require('http');
+            
+            // Clonamos os headers EXATOS da autenticação
+            const videoHeaders = { ...auth.authData.headers };
+            
+            // Adicionamos o Range que o Stremio pede (essencial para VOD)
+            if (req.headers.range) {
+                videoHeaders['Range'] = req.headers.range;
             }
 
-            console.log(`[PROXY] Tizen a pedir ${type} ID ${cleanId} da lista ${listIdx}...`);
-            console.log(`[PROXY] URL Final Limpa: ${finalUrl}`);
-
-            try {
-                // A SOLUÇÃO DO 401 ESTÁ AQUI: Filtragem de Cabeçalhos
-                // Em vez de mandar a "tranqueira" toda da API, mandamos só o BI da Box MAG
-                const videoHeaders = {
-                    "User-Agent": auth.authData.headers["User-Agent"] || "StrateM/1.0.0 (compatible; MAG254; Queen; Linux/2.6.23)",
-                    "Cookie": auth.authData.headers["Cookie"] || "",
-                    "Accept": "*/*",
-                    "Connection": "keep-alive"
-                };
-                
-                if (req.headers.range) {
-                    videoHeaders['Range'] = req.headers.range;
+            const videoReq = http.get(finalUrl, { headers: videoHeaders }, (videoRes) => {
+                // Se o servidor de vídeo ainda assim der erro, logamos aqui
+                if (videoRes.statusCode >= 400) {
+                    console.log(`[ERRO VÍDEO] Servidor respondeu com: ${videoRes.statusCode}`);
+                    res.status(videoRes.statusCode).end();
+                    return;
                 }
 
-                const videoResponse = await axios({
-                    method: 'get',
-                    url: finalUrl,
-                    headers: videoHeaders, // Usamos os headers limpos
-                    responseType: 'stream',
-                    maxRedirects: 10,
-                    timeout: 30000
-                });
-
+                // Repassamos os headers de volta para o Stremio
                 res.setHeader("Access-Control-Allow-Origin", "*");
-                res.setHeader("Content-Type", videoResponse.headers['content-type'] || (type === 'tv' ? 'video/mp2t' : 'video/mp4'));
-                res.setHeader("Accept-Ranges", "bytes");
-
-                if (videoResponse.headers['content-length']) {
-                    res.setHeader("Content-Length", videoResponse.headers['content-length']);
-                }
+                res.setHeader("Content-Type", videoRes.headers['content-type'] || "video/mp4");
                 
-                if (videoResponse.headers['content-range']) {
-                    res.setHeader("Content-Range", videoResponse.headers['content-range']);
-                    res.status(206);
-                } else {
-                    res.status(200);
-                }
+                if (videoRes.headers['content-length']) res.setHeader("Content-Length", videoRes.headers['content-length']);
+                if (videoRes.headers['content-range']) res.setHeader("Content-Range", videoRes.headers['content-range']);
+                if (videoRes.headers['accept-ranges']) res.setHeader("Accept-Ranges", "bytes");
 
-                videoResponse.data.pipe(res);
+                res.writeHead(videoRes.statusCode);
+                videoRes.pipe(res);
+            });
 
-                req.on('close', () => {
-                    videoResponse.data.destroy();
-                });
-
-            } catch (vidErr) {
-                // Se der 401 novamente, avisamos exatamente o que falhou
-                console.log(`Erro no stream: ${vidErr.message}`);
+            videoReq.on('error', (e) => {
+                console.log(`Erro de Conexão: ${e.message}`);
                 res.status(500).end();
-            }
+            });
+
+            req.on('close', () => videoReq.destroy());
+
         } else {
-            console.log("[PROXY] Portal não devolveu link de vídeo.");
             res.status(404).end();
         }
     } catch (e) {
-        console.log(`Erro Geral Proxy: ${e.message}`);
+        console.log(`Erro Geral: ${e.message}`);
         res.status(500).end();
     }
 });
