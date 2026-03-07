@@ -141,7 +141,7 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
-// PROXY DE VÍDEO - VERSÃO ESPECIAL SAMSUNG (ANTI-CRASH)
+// PROXY DE VÍDEO - VERSÃO "SAMSUNG ULTRA-STABLE"
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -170,7 +170,7 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
         const videoReq = client.get(targetUrl, { headers: videoHeaders }, (videoRes) => {
             
-            // Seguir redirecionamentos internos (crucial para Filmes na Samsung)
+            // 1. Lógica de Redirecionamento Interno
             if (videoRes.statusCode >= 300 && videoRes.statusCode < 400 && videoRes.headers.location) {
                 let newUrl = videoRes.headers.location;
                 if (!newUrl.startsWith('http')) {
@@ -180,31 +180,37 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
                 return fetchStream(newUrl, currentCookies, retryCount + 1);
             }
 
-            // Headers Base
+            // 2. Preparar Cabeçalhos com Segurança Extrema
             const responseHeaders = {
                 'Access-Control-Allow-Origin': '*',
                 'Content-Type': videoRes.headers['content-type'] || (type === 'tv' ? 'video/mp2t' : 'video/mp4'),
                 'Accept-Ranges': 'bytes',
-                'Cache-Control': 'no-cache',
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
                 'Connection': 'keep-alive'
             };
 
-            // --- PROTEÇÃO SAMSUNG: SÓ ENVIA SE O VALOR EXISTIR ---
-            if (videoRes.headers['content-length']) {
-                responseHeaders['Content-Length'] = videoRes.headers['content-length'];
-            }
-            if (videoRes.headers['content-range']) {
-                responseHeaders['Content-Range'] = videoRes.headers['content-range'];
-            }
+            if (videoRes.headers['content-length']) responseHeaders['Content-Length'] = videoRes.headers['content-length'];
+            if (videoRes.headers['content-range']) responseHeaders['Content-Range'] = videoRes.headers['content-range'];
 
-            // Escreve o cabeçalho e inicia o pipe
-            res.writeHead(videoRes.statusCode, responseHeaders);
-            videoRes.pipe(res);
+            // 3. Status Code para Samsung (Forçar 206 se houver Range)
+            let finalStatus = videoRes.statusCode;
+            if (req.headers.range && finalStatus === 200) finalStatus = 206;
+
+            // Prevenir crash: Verifica se a resposta ainda está aberta
+            if (!res.writableEnded) {
+                res.writeHead(finalStatus, responseHeaders);
+                videoRes.pipe(res);
+            }
         });
 
         videoReq.on('error', (e) => {
-            console.log(`[ERRO TÚNEL] ${e.message}`);
-            if (!res.headersSent) res.status(500).end();
+            console.error(`[SAMSUNG PROXY] Erro no socket: ${e.message}`);
+            if (!res.writableEnded) res.status(500).end();
+        });
+
+        // Limpeza quando a TV fecha a ligação
+        req.on('close', () => {
+            videoReq.destroy();
         });
     };
 
@@ -215,20 +221,21 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             ? `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`
             : `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent('ffrt http://localhost/ch/'+cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
 
-        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
+        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 7000 });
         let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
 
         if (typeof streamUrl === 'string') {
             let finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/i, "").trim();
             if (finalUrl.includes('/.?play_token=')) finalUrl = finalUrl.replace('/.', `/${cleanId}`);
             
-            console.log(`[PROXY] TÚNEL PARA SAMSUNG: ${finalUrl}`);
             fetchStream(finalUrl);
         } else {
-            res.status(404).end();
+            if (!res.writableEnded) res.status(404).end();
         }
     } catch (e) {
-        if (!res.headersSent) res.status(500).end();
+        console.error(`[ERRO GERAL] ${e.message}`);
+        if (!res.writableEnded) res.status(500).end();
     }
 });
+
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Tizen Addon Online na porta ${PORT}`));
