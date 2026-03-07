@@ -141,7 +141,7 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
-// PROXY DE VÍDEO - VERSÃO "SAMSUNG ULTRA-STABLE"
+// PROXY DE VÍDEO - VERSÃO HÍBRIDA (ANDROID + SAMSUNG FIX)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -170,7 +170,7 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
         const videoReq = client.get(targetUrl, { headers: videoHeaders }, (videoRes) => {
             
-            // 1. Lógica de Redirecionamento Interno
+            // 1. Redirecionamentos Internos (302)
             if (videoRes.statusCode >= 300 && videoRes.statusCode < 400 && videoRes.headers.location) {
                 let newUrl = videoRes.headers.location;
                 if (!newUrl.startsWith('http')) {
@@ -180,35 +180,41 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
                 return fetchStream(newUrl, currentCookies, retryCount + 1);
             }
 
-            // 2. Preparar Cabeçalhos com Segurança Extrema
+            // 2. Preparar Cabeçalhos Seguros
             const responseHeaders = {
                 'Access-Control-Allow-Origin': '*',
                 'Content-Type': videoRes.headers['content-type'] || (type === 'tv' ? 'video/mp2t' : 'video/mp4'),
-                'Accept-Ranges': 'bytes',
-                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Cache-Control': 'no-cache',
                 'Connection': 'keep-alive'
             };
 
+            // Para Filmes, dizemos que aceitamos avançar/recuar
+            if (type !== 'tv') {
+                responseHeaders['Accept-Ranges'] = 'bytes';
+            }
+
+            // Apenas repassamos os tamanhos se o portal os enviar de verdade
             if (videoRes.headers['content-length']) responseHeaders['Content-Length'] = videoRes.headers['content-length'];
             if (videoRes.headers['content-range']) responseHeaders['Content-Range'] = videoRes.headers['content-range'];
 
-            // 3. Status Code para Samsung (Forçar 206 se houver Range)
+            // O GRANDE FIX: Só usa 206 se o portal enviou o Content-Range real
             let finalStatus = videoRes.statusCode;
-            if (req.headers.range && finalStatus === 200) finalStatus = 206;
+            if (req.headers.range && finalStatus === 200 && videoRes.headers['content-range']) {
+                finalStatus = 206;
+            }
 
-            // Prevenir crash: Verifica se a resposta ainda está aberta
-            if (!res.writableEnded) {
+            // Evita o crash se a ligação já tiver sido fechada pela TV
+            if (!res.headersSent) {
                 res.writeHead(finalStatus, responseHeaders);
                 videoRes.pipe(res);
             }
         });
 
         videoReq.on('error', (e) => {
-            console.error(`[SAMSUNG PROXY] Erro no socket: ${e.message}`);
-            if (!res.writableEnded) res.status(500).end();
+            console.error(`[PROXY SOCKET ERRO] ${e.message}`);
+            if (!res.headersSent) res.status(500).end();
         });
 
-        // Limpeza quando a TV fecha a ligação
         req.on('close', () => {
             videoReq.destroy();
         });
@@ -217,11 +223,13 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     try {
         let cleanId = decodeURIComponent(channelId);
         const auth = await addon.authenticate(configData);
+        if (!auth) return res.status(401).end();
+
         let sUrl = (type === "movie" || type === "series")
             ? `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`
             : `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent('ffrt http://localhost/ch/'+cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
 
-        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 7000 });
+        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 10000 });
         let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
 
         if (typeof streamUrl === 'string') {
@@ -230,11 +238,11 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             
             fetchStream(finalUrl);
         } else {
-            if (!res.writableEnded) res.status(404).end();
+            if (!res.headersSent) res.status(404).end();
         }
     } catch (e) {
-        console.error(`[ERRO GERAL] ${e.message}`);
-        if (!res.writableEnded) res.status(500).end();
+        console.error(`[ERRO GERAL PROXY] ${e.message}`);
+        if (!res.headersSent) res.status(500).end();
     }
 });
 
