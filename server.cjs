@@ -141,7 +141,7 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
-// PROXY DE VÍDEO - VERSÃO SESSÃO TOTAL (FIX PARA FILMES NO ANDROID/TV)
+// PROXY DE VÍDEO - VERSÃO CLEAN & DEBUG (FIX PARA FILMES)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -166,28 +166,35 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         const client = targetUrl.startsWith('https') ? https : http;
 
         const videoReq = client.get(targetUrl, { headers: videoHeaders }, (videoRes) => {
-            
-            // CAPTURAR COOKIES DE REDIRECIONAMENTO (MUITO IMPORTANTE PARA FILMES)
+            console.log(`[TÚNEL] Status: ${videoRes.statusCode} | Tipo: ${videoRes.headers['content-type']}`);
+
+            // Capturar cookies de redirecionamento
             let newCookies = sessionCookies;
             if (videoRes.headers['set-cookie']) {
                 const cookiesMap = videoRes.headers['set-cookie'].map(c => c.split(';')[0]).join('; ');
                 newCookies = sessionCookies ? `${sessionCookies}; ${cookiesMap}` : cookiesMap;
             }
 
+            // Seguir Redirecionamento (301, 302, 307, 308)
             if (videoRes.statusCode >= 300 && videoRes.statusCode < 400 && videoRes.headers.location) {
                 let newUrl = videoRes.headers.location;
                 if (!newUrl.startsWith('http')) {
                     const parsed = new URL(targetUrl);
                     newUrl = `${parsed.protocol}//${parsed.host}${newUrl}`;
                 }
-                console.log(`[REDIR] A seguir para: ${newUrl}`);
                 return fetchStream(newUrl, newCookies, retryCount + 1);
             }
 
-            const contentType = videoRes.headers['content-type'] || '';
+            // Se o servidor retornar erro (como o ASN Block)
+            if (videoRes.statusCode >= 400) {
+                console.log(`[ERRO VÍDEO] O servidor negou o acesso. Código: ${videoRes.statusCode}`);
+                if (!res.headersSent) res.status(videoRes.statusCode).end();
+                return;
+            }
+
             const responseHeaders = {
                 'Access-Control-Allow-Origin': '*',
-                'Content-Type': contentType || (type === 'tv' ? 'video/mp2t' : 'video/mp4'),
+                'Content-Type': videoRes.headers['content-type'] || (type === 'tv' ? 'video/mp2t' : 'video/mp4'),
                 'Accept-Ranges': 'bytes',
                 'Cache-Control': 'no-cache',
                 'Connection': 'keep-alive'
@@ -208,7 +215,7 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         });
 
         videoReq.on('error', (e) => {
-            console.error(`[PROXY ERRO] ${e.message}`);
+            console.error(`[SOCKET ERRO] ${e.message}`);
             if (!res.headersSent) res.status(500).end();
         });
 
@@ -224,10 +231,8 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             ? `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`
             : `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent('ffrt http://localhost/ch/'+cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
 
-        // Capturamos os cookies iniciais que o portal gera no momento de criar o link
-        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 10000 });
+        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
         
-        // Extraímos cookies do axios
         const axiosCookies = linkRes.headers['set-cookie'] 
             ? linkRes.headers['set-cookie'].map(c => c.split(';')[0]).join('; ') 
             : '';
@@ -237,17 +242,19 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
 
         if (typeof streamUrl === 'string' && streamUrl.length > 5) {
+            // --- LIMPEZA DE URL (Remove barras duplas extras e espaços) ---
             let finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/i, "").trim();
+            finalUrl = finalUrl.replace(/([^:])\/\/+/g, '$1/'); // Transforma // em / (exceto http://)
+            
             if (finalUrl.includes('/.?play_token=')) finalUrl = finalUrl.replace('/.', `/${cleanId}`);
             
-            console.log(`[PROXY] Abrindo Filme com Cookies: ${finalUrl.substring(0, 60)}...`);
+            console.log(`[PROXY] Abrindo: ${finalUrl}`);
             fetchStream(finalUrl, initialCookies);
         } else {
-            if (!res.headersSent) res.status(404).end();
+            res.status(404).end();
         }
     } catch (e) {
-        console.error(`[ERRO GERAL] ${e.message}`);
-        if (!res.headersSent) res.status(500).end();
+        res.status(500).end();
     }
 });
 
