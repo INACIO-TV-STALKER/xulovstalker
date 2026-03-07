@@ -141,7 +141,7 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
-// PROXY DE VÍDEO - VERSÃO HÍBRIDA (ANDROID + SAMSUNG FIX)
+// PROXY DE VÍDEO - VERSÃO SESSÃO TOTAL (FIX PARA FILMES NO ANDROID/TV)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -150,17 +150,14 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const configData = lists[listIdx];
     if (!configData) return res.status(400).end();
 
-    const fetchStream = async (targetUrl, currentCookies, retryCount = 0) => {
+    const fetchStream = async (targetUrl, sessionCookies, retryCount = 0) => {
         if (retryCount > 3) return res.status(500).end();
-
-        const auth = await addon.authenticate(configData);
-        if (!auth) return res.status(401).end();
 
         const videoHeaders = {
             'User-Agent': 'StrateM/1.0.0 (compatible; MAG254; Queen; Linux/2.6.23)',
             'X-User-Agent': 'Model: MAG254; Version: 2.20.0-r19-254',
             'Referer': configData.url,
-            'Cookie': currentCookies || auth.authData.headers['Cookie'] || '',
+            'Cookie': sessionCookies || '',
             'Connection': 'keep-alive'
         };
         
@@ -170,40 +167,40 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
         const videoReq = client.get(targetUrl, { headers: videoHeaders }, (videoRes) => {
             
-            // 1. Redirecionamentos Internos (302)
+            // CAPTURAR COOKIES DE REDIRECIONAMENTO (MUITO IMPORTANTE PARA FILMES)
+            let newCookies = sessionCookies;
+            if (videoRes.headers['set-cookie']) {
+                const cookiesMap = videoRes.headers['set-cookie'].map(c => c.split(';')[0]).join('; ');
+                newCookies = sessionCookies ? `${sessionCookies}; ${cookiesMap}` : cookiesMap;
+            }
+
             if (videoRes.statusCode >= 300 && videoRes.statusCode < 400 && videoRes.headers.location) {
                 let newUrl = videoRes.headers.location;
                 if (!newUrl.startsWith('http')) {
                     const parsed = new URL(targetUrl);
                     newUrl = `${parsed.protocol}//${parsed.host}${newUrl}`;
                 }
-                return fetchStream(newUrl, currentCookies, retryCount + 1);
+                console.log(`[REDIR] A seguir para: ${newUrl}`);
+                return fetchStream(newUrl, newCookies, retryCount + 1);
             }
 
-            // 2. Preparar Cabeçalhos Seguros
+            const contentType = videoRes.headers['content-type'] || '';
             const responseHeaders = {
                 'Access-Control-Allow-Origin': '*',
-                'Content-Type': videoRes.headers['content-type'] || (type === 'tv' ? 'video/mp2t' : 'video/mp4'),
+                'Content-Type': contentType || (type === 'tv' ? 'video/mp2t' : 'video/mp4'),
+                'Accept-Ranges': 'bytes',
                 'Cache-Control': 'no-cache',
                 'Connection': 'keep-alive'
             };
 
-            // Para Filmes, dizemos que aceitamos avançar/recuar
-            if (type !== 'tv') {
-                responseHeaders['Accept-Ranges'] = 'bytes';
-            }
-
-            // Apenas repassamos os tamanhos se o portal os enviar de verdade
             if (videoRes.headers['content-length']) responseHeaders['Content-Length'] = videoRes.headers['content-length'];
             if (videoRes.headers['content-range']) responseHeaders['Content-Range'] = videoRes.headers['content-range'];
 
-            // O GRANDE FIX: Só usa 206 se o portal enviou o Content-Range real
             let finalStatus = videoRes.statusCode;
             if (req.headers.range && finalStatus === 200 && videoRes.headers['content-range']) {
                 finalStatus = 206;
             }
 
-            // Evita o crash se a ligação já tiver sido fechada pela TV
             if (!res.headersSent) {
                 res.writeHead(finalStatus, responseHeaders);
                 videoRes.pipe(res);
@@ -211,13 +208,11 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         });
 
         videoReq.on('error', (e) => {
-            console.error(`[PROXY SOCKET ERRO] ${e.message}`);
+            console.error(`[PROXY ERRO] ${e.message}`);
             if (!res.headersSent) res.status(500).end();
         });
 
-        req.on('close', () => {
-            videoReq.destroy();
-        });
+        req.on('close', () => videoReq.destroy());
     };
 
     try {
@@ -229,19 +224,29 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             ? `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`
             : `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent('ffrt http://localhost/ch/'+cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
 
+        // Capturamos os cookies iniciais que o portal gera no momento de criar o link
         const linkRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 10000 });
+        
+        // Extraímos cookies do axios
+        const axiosCookies = linkRes.headers['set-cookie'] 
+            ? linkRes.headers['set-cookie'].map(c => c.split(';')[0]).join('; ') 
+            : '';
+        
+        const initialCookies = [auth.authData.headers['Cookie'], axiosCookies].filter(Boolean).join('; ');
+
         let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
 
-        if (typeof streamUrl === 'string') {
+        if (typeof streamUrl === 'string' && streamUrl.length > 5) {
             let finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/i, "").trim();
             if (finalUrl.includes('/.?play_token=')) finalUrl = finalUrl.replace('/.', `/${cleanId}`);
             
-            fetchStream(finalUrl);
+            console.log(`[PROXY] Abrindo Filme com Cookies: ${finalUrl.substring(0, 60)}...`);
+            fetchStream(finalUrl, initialCookies);
         } else {
             if (!res.headersSent) res.status(404).end();
         }
     } catch (e) {
-        console.error(`[ERRO GERAL PROXY] ${e.message}`);
+        console.error(`[ERRO GERAL] ${e.message}`);
         if (!res.headersSent) res.status(500).end();
     }
 });
