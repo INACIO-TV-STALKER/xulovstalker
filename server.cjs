@@ -141,7 +141,8 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     const host = req.headers.host;
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
-// PROXY DE VÍDEO - VERSÃO CLEAN & DEBUG (FIX PARA FILMES)
+
+// O SEGREDO PARA A TIZEN TV E ANDROID (ESTABILIZADO)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -150,111 +151,90 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const configData = lists[listIdx];
     if (!configData) return res.status(400).end();
 
-    const fetchStream = async (targetUrl, sessionCookies, retryCount = 0) => {
-        if (retryCount > 3) return res.status(500).end();
-
-        const videoHeaders = {
-            'User-Agent': 'StrateM/1.0.0 (compatible; MAG254; Queen; Linux/2.6.23)',
-            'X-User-Agent': 'Model: MAG254; Version: 2.20.0-r19-254',
-            'Referer': configData.url,
-            'Cookie': sessionCookies || '',
-            'Connection': 'keep-alive'
-        };
-        
-        if (req.headers.range) videoHeaders['Range'] = req.headers.range;
-
-        const client = targetUrl.startsWith('https') ? https : http;
-
-        const videoReq = client.get(targetUrl, { headers: videoHeaders }, (videoRes) => {
-            console.log(`[TÚNEL] Status: ${videoRes.statusCode} | Tipo: ${videoRes.headers['content-type']}`);
-
-            // Capturar cookies de redirecionamento
-            let newCookies = sessionCookies;
-            if (videoRes.headers['set-cookie']) {
-                const cookiesMap = videoRes.headers['set-cookie'].map(c => c.split(';')[0]).join('; ');
-                newCookies = sessionCookies ? `${sessionCookies}; ${cookiesMap}` : cookiesMap;
-            }
-
-            // Seguir Redirecionamento (301, 302, 307, 308)
-            if (videoRes.statusCode >= 300 && videoRes.statusCode < 400 && videoRes.headers.location) {
-                let newUrl = videoRes.headers.location;
-                if (!newUrl.startsWith('http')) {
-                    const parsed = new URL(targetUrl);
-                    newUrl = `${parsed.protocol}//${parsed.host}${newUrl}`;
-                }
-                return fetchStream(newUrl, newCookies, retryCount + 1);
-            }
-
-            // Se o servidor retornar erro (como o ASN Block)
-            if (videoRes.statusCode >= 400) {
-                console.log(`[ERRO VÍDEO] O servidor negou o acesso. Código: ${videoRes.statusCode}`);
-                if (!res.headersSent) res.status(videoRes.statusCode).end();
-                return;
-            }
-
-            const responseHeaders = {
-                'Access-Control-Allow-Origin': '*',
-                'Content-Type': videoRes.headers['content-type'] || (type === 'tv' ? 'video/mp2t' : 'video/mp4'),
-                'Accept-Ranges': 'bytes',
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive'
-            };
-
-            if (videoRes.headers['content-length']) responseHeaders['Content-Length'] = videoRes.headers['content-length'];
-            if (videoRes.headers['content-range']) responseHeaders['Content-Range'] = videoRes.headers['content-range'];
-
-            let finalStatus = videoRes.statusCode;
-            if (req.headers.range && finalStatus === 200 && videoRes.headers['content-range']) {
-                finalStatus = 206;
-            }
-
-            if (!res.headersSent) {
-                res.writeHead(finalStatus, responseHeaders);
-                videoRes.pipe(res);
-            }
-        });
-
-        videoReq.on('error', (e) => {
-            console.error(`[SOCKET ERRO] ${e.message}`);
-            if (!res.headersSent) res.status(500).end();
-        });
-
-        req.on('close', () => videoReq.destroy());
-    };
+    const auth = await addon.authenticate(configData);
+    if (!auth) return res.status(401).end();
 
     try {
-        let cleanId = decodeURIComponent(channelId);
-        const auth = await addon.authenticate(configData);
-        if (!auth) return res.status(401).end();
-
-        let sUrl = (type === "movie" || type === "series")
-            ? `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`
-            : `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent('ffrt http://localhost/ch/'+cleanId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+        let sUrl = "";
+        
+        // Se for filme ou série, o Stalker pede como 'vod' e enviamos o cmd recebido
+        if (type === "movie" || type === "series") {
+            sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(channelId)}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+        } else {
+            // LÓGICA DE TV ORIGINAL
+            const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
+            sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+        }
 
         const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
-        
-        const axiosCookies = linkRes.headers['set-cookie'] 
-            ? linkRes.headers['set-cookie'].map(c => c.split(';')[0]).join('; ') 
-            : '';
-        
-        const initialCookies = [auth.authData.headers['Cookie'], axiosCookies].filter(Boolean).join('; ');
-
         let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
+        
+        if (typeof streamUrl === 'string') {
+            const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+            console.log(`\n[PROXY] Tizen a pedir ${type} ID ${channelId} da lista ${listIdx}...`);
 
-        if (typeof streamUrl === 'string' && streamUrl.length > 5) {
-            // --- LIMPEZA DE URL (Remove barras duplas extras e espaços) ---
-            let finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/i, "").trim();
-            finalUrl = finalUrl.replace(/([^:])\/\/+/g, '$1/'); // Transforma // em / (exceto http://)
-            
-            if (finalUrl.includes('/.?play_token=')) finalUrl = finalUrl.replace('/.', `/${cleanId}`);
-            
-            console.log(`[PROXY] Abrindo: ${finalUrl}`);
-            fetchStream(finalUrl, initialCookies);
+            try {
+                // 1. PREPARAÇÃO DOS HEADERS CRÍTICOS
+                const requestHeaders = { 
+                    ...auth.authData.headers,
+                    'Connection': 'keep-alive'
+                };
+                
+                // Repassar o Range (Obrigatório para Tizen e VOD no Android)
+                if (req.headers.range) {
+                    requestHeaders['Range'] = req.headers.range;
+                }
+
+                // 2. PEDIDO AO SERVIDOR IPTV (Com Timeout e Validação)
+                const videoResponse = await axios({
+                    method: 'get',
+                    url: finalUrl,
+                    headers: requestHeaders,
+                    responseType: 'stream',
+                    maxRedirects: 5,
+                    timeout: 20000, // Evita que o proxy fique congelado (20 seg)
+                    validateStatus: false // Permite-nos tratar erros 4xx e 5xx sem crashar o app
+                });
+
+                // Se o IPTV rejeitar (ex: 404, 403), abortamos limpo
+                if (videoResponse.status >= 400) {
+                    console.log(`[PROXY] ❌ Servidor IPTV rejeitou (Status: ${videoResponse.status})`);
+                    return res.status(videoResponse.status).end();
+                }
+
+                // 3. HEADERS DE RESPOSTA PARA A TV TIZEN
+                res.status(videoResponse.status);
+                res.setHeader("Access-Control-Allow-Origin", "*");
+                res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp2t");
+                res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+                
+                // Repassar tamanhos e blocos (Essencial para não travar)
+                if (videoResponse.headers['accept-ranges']) res.setHeader('Accept-Ranges', videoResponse.headers['accept-ranges']);
+                if (videoResponse.headers['content-range']) res.setHeader('Content-Range', videoResponse.headers['content-range']);
+                if (videoResponse.headers['content-length']) res.setHeader('Content-Length', videoResponse.headers['content-length']);
+
+                // 4. INÍCIO DO STREAM
+                videoResponse.data.pipe(res);
+
+                // 5. O SALVADOR DO RENDER (MATA O PROCESSO AO SAIR)
+                req.on('close', () => {
+                    console.log(`[PROXY] ⏹️ Ligação encerrada pelo utilizador (${type} ${channelId}). A libertar RAM...`);
+                    if (videoResponse.data) {
+                        videoResponse.data.destroy(); // Corta o download do IPTV imediatamente!
+                    }
+                });
+
+            } catch (vidErr) {
+                console.log(`[PROXY] 💀 Erro no stream: ${vidErr.message}`);
+                if (!res.headersSent) res.status(500).end();
+            }
+
         } else {
             res.status(404).end();
         }
     } catch (e) {
-        res.status(500).end();
+        console.error(`[PROXY] 💀 Falha na API do Stalker: ${e.message}`);
+        if (!res.headersSent) res.status(500).end();
     }
 });
 
