@@ -110,7 +110,7 @@ const addon = {
                         if (genreId !== undefined) filteredChannels = channels.filter(ch => String(ch.tv_genre_id || "") === String(genreId));
                     } catch (e) {}
                 }
-                return { metas: filteredChannels.map(ch => ({ id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name || 'Canal')}`, name: ch.name, type: "tv", poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "", posterShape: "square" })) };
+                return { metas: filteredChannels.map(ch => ({ id: `xlv:${listIdx}:${ch.id}:${encodeURIComponent(ch.name || 'Canal')}`, name: ch.name, type: "tv", poster: ch.logo ? (ch.logo.startsWith('http') ? ch.logo : config.url.replace(/\/$/, "") + "/c/" + ch.logo) : "", posterShape: "landscape" })) };
             } else {
                 const stalkerType = type === "movie" ? "vod" : "series";
                 const page = extra.skip ? Math.floor(extra.skip / 14) + 1 : 1;
