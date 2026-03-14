@@ -14,7 +14,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// A Nova Página de Configuração (Gera o link Base64) - INTACTA
+// A Nova Página de Configuração (Gera o link Base64) - ATUALIZADA COM XTREAM
 app.get("/", (req, res) => res.redirect("/configure"));
 app.get("/configure", (req, res) => {
     res.send(`
@@ -36,7 +36,7 @@ app.get("/configure", (req, res) => {
         </style></head>
         <body>
             <div class="container">
-                <h2 style="text-align:center">XuloV Stalker Hub</h2>
+                <h2 style="text-align:center">XuloV Multi-Hub (Stalker & Xtream)</h2>
                 <div id="lists-container"></div>
                 <button class="add-btn" onclick="addList()">+ Adicionar Nova Lista (Máx 5)</button>
                 <button class="install-btn" onclick="install()">🚀 INSTALAR NO STREMIO</button>
@@ -53,27 +53,42 @@ app.get("/configure", (req, res) => {
                         <div class="list-box" id="box-\${id}">
                             <div class="remove-btn" onclick="removeList(\${id})">REMOVER</div>
                             <h3>LISTA #\${listCount}</h3>
+                            
+                            <label>TIPO DE LISTA</label>
+                            <select class="type" onchange="toggleType(this, \${id})">
+                                <option value="stalker">Stalker Portal (MAC)</option>
+                                <option value="xtream">Xtream Codes (User/Pass)</option>
+                            </select>
+
                             <label>NOME DA LISTA</label>
                             <input type="text" class="name" placeholder="Ex: IPTV Portugal">
-                            <label>URL PORTAL</label>
+                            <label>URL PORTAL / SERVIDOR</label>
                             <input type="text" class="url" placeholder="http://portal.com:8080/c/">
-                            <label>MAC ADDRESS</label>
-                            <input type="text" class="mac" placeholder="00:1A:79:XX:XX:XX">
-                            <label>BOX MODEL</label>
-                            <select class="model">
-                                <option value="MAG250">MAG 250</option>
-                                <option value="MAG254">MAG 254</option>
-                                <option value="MAG256">MAG 256</option>
-                                <option value="MAG322">MAG 322</option>
-                                <option value="MAG424">MAG 424</option>
-                                <option value="MAG522">MAG 522</option>
-                            </select>
-                            <span class="adv-toggle" onclick="toggleAdv(\${id})">Configurações Avançadas</span>
-                            <div class="advanced" id="adv-\${id}">
-                                <label>SERIAL NUMBER (SN)</label><input type="text" class="sn">
-                                <label>DEVICE ID 1</label><input type="text" class="id1">
-                                <label>DEVICE ID 2</label><input type="text" class="id2">
-                                <label>SIGNATURE</label><input type="text" class="sig">
+                            
+                            <div id="stalker-group-\${id}">
+                                <label>MAC ADDRESS</label>
+                                <input type="text" class="mac" placeholder="00:1A:79:XX:XX:XX">
+                                <label>BOX MODEL</label>
+                                <select class="model">
+                                    <option value="MAG250">MAG 250</option>
+                                    <option value="MAG254">MAG 254</option>
+                                    <option value="MAG256">MAG 256</option>
+                                    <option value="MAG322">MAG 322</option>
+                                </select>
+                                <span class="adv-toggle" onclick="toggleAdv(\${id})">Configurações Avançadas</span>
+                                <div class="advanced" id="adv-\${id}">
+                                    <label>SERIAL NUMBER (SN)</label><input type="text" class="sn">
+                                    <label>DEVICE ID 1</label><input type="text" class="id1">
+                                    <label>DEVICE ID 2</label><input type="text" class="id2">
+                                    <label>SIGNATURE</label><input type="text" class="sig">
+                                </div>
+                            </div>
+
+                            <div id="xtream-group-\${id}" style="display:none;">
+                                <label>USERNAME</label>
+                                <input type="text" class="user" placeholder="O teu utilizador Xtream">
+                                <label>PASSWORD</label>
+                                <input type="text" class="pass" placeholder="A tua password Xtream">
                             </div>
                         </div>\`;
                     document.getElementById('lists-container').insertAdjacentHTML('beforeend', html);
@@ -82,6 +97,16 @@ app.get("/configure", (req, res) => {
                 function removeList(id) {
                     document.getElementById('box-'+id).remove();
                     listCount--;
+                }
+
+                function toggleType(selectEl, id) {
+                    if (selectEl.value === 'xtream') {
+                        document.getElementById('stalker-group-'+id).style.display = 'none';
+                        document.getElementById('xtream-group-'+id).style.display = 'block';
+                    } else {
+                        document.getElementById('stalker-group-'+id).style.display = 'block';
+                        document.getElementById('xtream-group-'+id).style.display = 'none';
+                    }
                 }
 
                 function toggleAdv(id) {
@@ -94,6 +119,7 @@ app.get("/configure", (req, res) => {
                     if(boxes.length === 0) return alert("Adiciona pelo menos uma lista!");
 
                     const lists = Array.from(boxes).map(box => ({
+                        type: box.querySelector('.type').value,
                         name: box.querySelector('.name').value.trim(),
                         url: box.querySelector('.url').value.trim(),
                         mac: box.querySelector('.mac').value.trim(),
@@ -101,7 +127,9 @@ app.get("/configure", (req, res) => {
                         sn: box.querySelector('.sn').value.trim(),
                         id1: box.querySelector('.id1').value.trim(),
                         id2: box.querySelector('.id2').value.trim(),
-                        sig: box.querySelector('.sig').value.trim()
+                        sig: box.querySelector('.sig').value.trim(),
+                        user: box.querySelector('.user').value.trim(),
+                        pass: box.querySelector('.pass').value.trim()
                     }));
 
                     const config = { lists };
@@ -132,7 +160,6 @@ app.get("/:config/catalog/:type/:id/:extra?.json", async (req, res) => {
     res.json(await addon.getCatalog(type, id, extraObj, config));
 });
 
-// ADICIONADO: Agora a rota Meta chama a função do addon para carregar episódios de Séries
 app.get("/:config/meta/:type/:id.json", async (req, res) => {
     res.json(await addon.getMeta(req.params.type, req.params.id, req.params.config));
 });
@@ -142,7 +169,7 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
 
-// O SEGREDO PARA A TIZEN TV E ANDROID (ESTABILIZADO)
+// O SEGREDO PARA A TIZEN TV E ANDROID (ESTABILIZADO - AGORA COM XTREAM)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -151,91 +178,96 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const configData = lists[listIdx];
     if (!configData) return res.status(400).end();
 
-    const auth = await addon.authenticate(configData);
-    if (!auth) return res.status(401).end();
-
     try {
-        let sUrl = "";
-        
-        // Se for filme ou série, o Stalker pede como 'vod' e enviamos o cmd recebido
-        if (type === "movie" || type === "series") {
-            sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(channelId)}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
-        } else {
-            // LÓGICA DE TV ORIGINAL
-            const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
-            sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
-        }
+        let finalUrl = "";
+        let requestHeaders = { 'Connection': 'keep-alive' };
 
-        const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
-        let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
-        
-        if (typeof streamUrl === 'string') {
-            const finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-            console.log(`\n[PROXY] Tizen a pedir ${type} ID ${channelId} da lista ${listIdx}...`);
+        // --- ADICIONADO: LÓGICA XTREAM ---
+        if (configData.type === 'xtream') {
+            const baseUrl = configData.url.replace(/\/$/, "");
+            if (type === 'movie') {
+                finalUrl = `${baseUrl}/movie/${configData.user}/${configData.pass}/${channelId}`;
+            } else if (type === 'series') {
+                finalUrl = `${baseUrl}/series/${configData.user}/${configData.pass}/${channelId}`;
+            } else {
+                finalUrl = `${baseUrl}/live/${configData.user}/${configData.pass}/${channelId}`;
+            }
+            console.log(`\n[PROXY] Xtream a pedir ${type} ID ${channelId} da lista ${listIdx}...`);
+        } 
+        // --- MANTIDO: LÓGICA STALKER INTACTA ---
+        else {
+            const auth = await addon.authenticate(configData);
+            if (!auth) return res.status(401).end();
 
-            try {
-                // 1. PREPARAÇÃO DOS HEADERS CRÍTICOS
-                const requestHeaders = { 
-                    ...auth.authData.headers,
-                    'Connection': 'keep-alive'
-                };
-                
-                // Repassar o Range (Obrigatório para Tizen e VOD no Android)
-                if (req.headers.range) {
-                    requestHeaders['Range'] = req.headers.range;
-                }
-
-                // 2. PEDIDO AO SERVIDOR IPTV (Com Timeout e Validação)
-                const videoResponse = await axios({
-                    method: 'get',
-                    url: finalUrl,
-                    headers: requestHeaders,
-                    responseType: 'stream',
-                    maxRedirects: 5,
-                    timeout: 20000, // Evita que o proxy fique congelado (20 seg)
-                    validateStatus: false // Permite-nos tratar erros 4xx e 5xx sem crashar o app
-                });
-
-                // Se o IPTV rejeitar (ex: 404, 403), abortamos limpo
-                if (videoResponse.status >= 400) {
-                    console.log(`[PROXY] ❌ Servidor IPTV rejeitou (Status: ${videoResponse.status})`);
-                    return res.status(videoResponse.status).end();
-                }
-
-                // 3. HEADERS DE RESPOSTA PARA A TV TIZEN
-                res.status(videoResponse.status);
-                res.setHeader("Access-Control-Allow-Origin", "*");
-                res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp2t");
-                res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-                
-                // Repassar tamanhos e blocos (Essencial para não travar)
-                if (videoResponse.headers['accept-ranges']) res.setHeader('Accept-Ranges', videoResponse.headers['accept-ranges']);
-                if (videoResponse.headers['content-range']) res.setHeader('Content-Range', videoResponse.headers['content-range']);
-                if (videoResponse.headers['content-length']) res.setHeader('Content-Length', videoResponse.headers['content-length']);
-
-                // 4. INÍCIO DO STREAM
-                videoResponse.data.pipe(res);
-
-                // 5. O SALVADOR DO RENDER (MATA O PROCESSO AO SAIR)
-                req.on('close', () => {
-                    console.log(`[PROXY] ⏹️ Ligação encerrada pelo utilizador (${type} ${channelId}). A libertar RAM...`);
-                    if (videoResponse.data) {
-                        videoResponse.data.destroy(); // Corta o download do IPTV imediatamente!
-                    }
-                });
-
-            } catch (vidErr) {
-                console.log(`[PROXY] 💀 Erro no stream: ${vidErr.message}`);
-                if (!res.headersSent) res.status(500).end();
+            let sUrl = "";
+            if (type === "movie" || type === "series") {
+                sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(channelId)}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+            } else {
+                const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
+                sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
             }
 
-        } else {
-            res.status(404).end();
+            const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
+            let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
+
+            if (typeof streamUrl === 'string') {
+                finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+                requestHeaders = { ...auth.authData.headers, ...requestHeaders };
+                console.log(`\n[PROXY] Tizen a pedir ${type} ID ${channelId} da lista ${listIdx}...`);
+            }
         }
+
+        if (!finalUrl) return res.status(404).end();
+
+        // --- MANTIDO: O TEU CÓDIGO INTACTO DE REPASSE E ESTABILIZAÇÃO ---
+        try {
+            if (req.headers.range) {
+                requestHeaders['Range'] = req.headers.range;
+            }
+
+            const videoResponse = await axios({
+                method: 'get',
+                url: finalUrl,
+                headers: requestHeaders,
+                responseType: 'stream',
+                maxRedirects: 5,
+                timeout: 20000,
+                validateStatus: false
+            });
+
+            if (videoResponse.status >= 400) {
+                console.log(`[PROXY] ❌ Servidor IPTV rejeitou (Status: ${videoResponse.status})`);
+                return res.status(videoResponse.status).end();
+            }
+
+            res.status(videoResponse.status);
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp2t");
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+
+            if (videoResponse.headers['accept-ranges']) res.setHeader('Accept-Ranges', videoResponse.headers['accept-ranges']);
+            if (videoResponse.headers['content-range']) res.setHeader('Content-Range', videoResponse.headers['content-range']);
+            if (videoResponse.headers['content-length']) res.setHeader('Content-Length', videoResponse.headers['content-length']);
+
+            videoResponse.data.pipe(res);
+
+            req.on('close', () => {
+                console.log(`[PROXY] ⏹️ Ligação encerrada pelo utilizador (${type} ${channelId}). A libertar RAM...`);
+                if (videoResponse.data) {
+                    videoResponse.data.destroy();
+                }
+            });
+
+        } catch (vidErr) {
+            console.log(`[PROXY] 💀 Erro no stream: ${vidErr.message}`);
+            if (!res.headersSent) res.status(500).end();
+        }
+
     } catch (e) {
-        console.error(`[PROXY] 💀 Falha na API do Stalker: ${e.message}`);
+        console.error(`[PROXY] 💀 Falha na API: ${e.message}`);
         if (!res.headersSent) res.status(500).end();
     }
 });
 
-app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Tizen Addon Online na porta ${PORT}`));
+app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Addon Multi-Hub Online na porta ${PORT}`));
+
