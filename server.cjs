@@ -14,7 +14,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// A Nova Página de Configuração (Gera o link Base64) - ATUALIZADA COM XTREAM
+// A Nova Página de Configuração (Gera o link Base64)
 app.get("/", (req, res) => res.redirect("/configure"));
 app.get("/configure", (req, res) => {
     res.send(`
@@ -169,7 +169,7 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
 
-// O SEGREDO PARA A TIZEN TV E ANDROID (ESTABILIZADO - AGORA COM XTREAM)
+// O SEGREDO PARA A TIZEN TV E ANDROID
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -182,15 +182,21 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         let finalUrl = "";
         let requestHeaders = { 'Connection': 'keep-alive' };
 
-        // --- ADICIONADO: LÓGICA XTREAM ---
+        // --- ADICIONADO: LÓGICA XTREAM COM USER-AGENT ---
         if (configData.type === 'xtream') {
             const baseUrl = configData.url.replace(/\/$/, "");
+            
+            // 🔥 A SOLUÇÃO DO ERRO 500: Camuflagem de VLC para o provedor não bloquear o pedido
+            requestHeaders['User-Agent'] = 'VLC/3.0.18 LibVLC/3.0.18';
+            requestHeaders['Accept'] = '*/*';
+
             if (type === 'movie') {
                 finalUrl = `${baseUrl}/movie/${configData.user}/${configData.pass}/${channelId}`;
             } else if (type === 'series') {
                 finalUrl = `${baseUrl}/series/${configData.user}/${configData.pass}/${channelId}`;
             } else {
-                finalUrl = `${baseUrl}/live/${configData.user}/${configData.pass}/${channelId}`;
+                // TV ao Vivo no Xtream costuma ser na raiz
+                finalUrl = `${baseUrl}/${configData.user}/${configData.pass}/${channelId}`;
             }
             console.log(`\n[PROXY] Xtream a pedir ${type} ID ${channelId} da lista ${listIdx}...`);
         } 
@@ -213,7 +219,7 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             if (typeof streamUrl === 'string') {
                 finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                 requestHeaders = { ...auth.authData.headers, ...requestHeaders };
-                console.log(`\n[PROXY] Tizen a pedir ${type} ID ${channelId} da lista ${listIdx}...`);
+                console.log(`\n[PROXY] Stalker a pedir ${type} ID ${channelId} da lista ${listIdx}...`);
             }
         }
 
