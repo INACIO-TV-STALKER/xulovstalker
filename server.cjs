@@ -182,11 +182,10 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         let finalUrl = "";
         let requestHeaders = { 'Connection': 'keep-alive' };
 
-        // --- ADICIONADO: LÓGICA XTREAM COM USER-AGENT ---
+        // --- LÓGICA XTREAM ---
         if (configData.type === 'xtream') {
             const baseUrl = configData.url.replace(/\/$/, "");
             
-            // 🔥 A SOLUÇÃO DO ERRO 500: Camuflagem de VLC para o provedor não bloquear o pedido
             requestHeaders['User-Agent'] = 'VLC/3.0.18 LibVLC/3.0.18';
             requestHeaders['Accept'] = '*/*';
 
@@ -195,19 +194,25 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             } else if (type === 'series') {
                 finalUrl = `${baseUrl}/series/${configData.user}/${configData.pass}/${channelId}`;
             } else {
-                // TV ao Vivo no Xtream costuma ser na raiz
                 finalUrl = `${baseUrl}/${configData.user}/${configData.pass}/${channelId}`;
             }
             console.log(`\n[PROXY] Xtream a pedir ${type} ID ${channelId} da lista ${listIdx}...`);
         } 
-        // --- MANTIDO: LÓGICA STALKER INTACTA ---
+        // --- LÓGICA STALKER ---
         else {
             const auth = await addon.authenticate(configData);
             if (!auth) return res.status(401).end();
 
             let sUrl = "";
+            
             if (type === "movie" || type === "series") {
-                sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(channelId)}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+                let stalkerCmd = channelId;
+                try { 
+                    stalkerCmd = decodeURIComponent(stalkerCmd);
+                    if (stalkerCmd.includes('%')) stalkerCmd = decodeURIComponent(stalkerCmd);
+                } catch(e) {}
+
+                sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             } else {
                 const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
                 sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
@@ -225,7 +230,7 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
         if (!finalUrl) return res.status(404).end();
 
-        // --- MANTIDO: O TEU CÓDIGO INTACTO DE REPASSE E ESTABILIZAÇÃO ---
+        // --- CÓDIGO DE REPASSE E ESTABILIZAÇÃO ---
         try {
             if (req.headers.range) {
                 requestHeaders['Range'] = req.headers.range;
@@ -237,7 +242,7 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
                 headers: requestHeaders,
                 responseType: 'stream',
                 maxRedirects: 5,
-                timeout: 20000,
+                // 🔥 TIMEOUT REMOVIDO! A TV agora pode dar infinitamente sem ser cortada
                 validateStatus: false
             });
 
@@ -248,12 +253,26 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
             res.status(videoResponse.status);
             res.setHeader("Access-Control-Allow-Origin", "*");
-            res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp2t");
+
+            let cType = videoResponse.headers['content-type'];
+            if (!cType || cType === 'application/octet-stream' || cType === 'text/html') {
+                if (channelId.includes('.mkv')) cType = 'video/x-matroska';
+                else if (channelId.includes('.mp4')) cType = 'video/mp4';
+                else cType = type === 'tv' ? 'video/mp2t' : 'video/mp4';
+            }
+            res.setHeader("Content-Type", cType);
+
             res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
 
+            // Passar headers importantes para estabilidade
             if (videoResponse.headers['accept-ranges']) res.setHeader('Accept-Ranges', videoResponse.headers['accept-ranges']);
             if (videoResponse.headers['content-range']) res.setHeader('Content-Range', videoResponse.headers['content-range']);
             if (videoResponse.headers['content-length']) res.setHeader('Content-Length', videoResponse.headers['content-length']);
+            
+            // Para TV em direto, garantir que o Stremio sabe que os dados vêm em pedaços contínuos
+            if (type === 'tv' && !videoResponse.headers['content-length']) {
+                res.setHeader('Transfer-Encoding', 'chunked');
+            }
 
             videoResponse.data.pipe(res);
 

@@ -66,12 +66,12 @@ const addon = {
             let tvGenres = ["Predefinido"];
             let movGenres = ["Predefinido"];
             let serGenres = ["Predefinido"];
-            
+
             if (l.type === 'xtream') {
                 try {
                     const baseUrl = l.url.trim().replace(/\/$/, "");
                     const apiBase = `${baseUrl}/player_api.php?username=${encodeURIComponent(l.user)}&password=${encodeURIComponent(l.pass)}`;
-                    
+
                     const fetchXtreamCats = async (action) => {
                         try {
                             const res = await axios.get(`${apiBase}&action=${action}`, { timeout: 5000 });
@@ -186,7 +186,7 @@ const addon = {
             } else {
                 const stalkerType = type === "movie" ? "vod" : "series";
                 let categoryParam = "";
-                
+
                 if (extra && extra.genre && extra.genre !== "Predefinido") {
                     try {
                         const cUrl = auth.api + `type=${stalkerType}&action=get_categories&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
@@ -265,4 +265,3 @@ const addon = {
 };
 
 module.exports = addon;
-
