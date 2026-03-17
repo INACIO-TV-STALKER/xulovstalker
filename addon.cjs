@@ -1,7 +1,6 @@
 const axios = require("axios");
 const crypto = require("crypto");
 
-// Sistema de Cache para Rapidez
 const memCache = {};
 function getCache(key) {
     const cached = memCache[key];
@@ -85,7 +84,7 @@ const addon = {
         }));
 
         const addonName = lists.map(l => l.name).filter(Boolean).join(" + ") || "XuloV Hub";
-        const m = { id: "org.xulov.stalker", version: "5.1.9", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
+        const m = { id: "org.xulov.stalker", version: "5.1.10", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
         setCache(cacheKey, m, 60); return m;
     },
 
@@ -101,7 +100,6 @@ const addon = {
                 const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
                 let act = type === "tv" ? "get_live_streams" : (type === "movie" ? "get_vod_streams" : "get_series");
                 
-                // Cache da categoria para não repetir pedidos lentos
                 const cacheKey = `cat_data_${id}_${extra.genre || 'all'}`;
                 let cachedMetas = getCache(cacheKey);
                 
@@ -119,7 +117,6 @@ const addon = {
                     }));
                     setCache(cacheKey, cachedMetas, 10);
                 }
-                // Paginação correta: devolve 100 de cada vez conforme o skip, mas da lista completa
                 metas = cachedMetas.slice(skip, skip + 100);
             } else {
                 const auth = await this.authenticate(config);
@@ -134,7 +131,6 @@ const addon = {
                         const cat = (Array.isArray(cats) ? cats : Object.values(cats)).find(c => (c.title || c.name) === extra.genre);
                         if (cat) catP = sType === "itv" ? `&genre=${cat.id}` : `&category=${cat.id}`;
                     }
-                    // Paginação Stalker baseada no skip do Stremio (Stalker usa p=1,2,3...)
                     const page = Math.floor(skip / 14) + 1;
                     const url = `${auth.api}type=${sType}&action=${sAct}${catP}&p=${page}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                     const res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
@@ -161,16 +157,31 @@ const addon = {
                     const b = config.url.trim().replace(/\/$/, "");
                     const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
                     const res = await axios.get(`${api}&action=get_series_info&series_id=${sId}`, { timeout: 10000 });
+                    
+                    // Adicionar Poster, Fundo e Sinopse da Série
+                    if (res.data?.info) {
+                        meta.description = res.data.info.plot || res.data.info.description || "";
+                        meta.poster = res.data.info.cover || "";
+                        if (res.data.info.backdrop_path && res.data.info.backdrop_path.length > 0) {
+                            meta.background = res.data.info.backdrop_path[0];
+                        } else {
+                            meta.background = meta.poster;
+                        }
+                    }
+
                     if (res.data?.episodes) {
                         let videos = [];
                         Object.keys(res.data.episodes).forEach(sN => {
                             const sNum = parseInt(sN);
                             res.data.episodes[sN].forEach((ep) => {
+                                // Adicionar Titulo do Episódio e Thumbnail
                                 videos.push({
                                     id: `xlv:${lIdx}:${ep.id}.${ep.container_extension || 'mkv'}:${encodeURIComponent(ep.title || 'Ep')}`,
-                                    title: ep.title || `Episódio ${ep.episode_num}`,
+                                    title: ep.title || ep.info?.name || `Episódio ${ep.episode_num}`,
                                     season: sNum,
-                                    episode: parseInt(ep.episode_num)
+                                    episode: parseInt(ep.episode_num),
+                                    thumbnail: ep.info?.movie_image || ep.info?.cover || meta.poster,
+                                    overview: ep.info?.plot || ep.info?.description || ""
                                 });
                             });
                         });
@@ -182,21 +193,57 @@ const addon = {
                         const url = `${auth.api}type=series&action=get_ordered_list&movie_id=${sId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                         const res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
                         const items = res.data?.js?.data || res.data?.js || [];
+                        const itemsArray = Array.isArray(items) ? items : Object.values(items);
+                        
+                        // Adicionar Poster, Fundo e Sinopse da Série do primeiro item
+                        let firstItem = itemsArray[0];
+                        if (firstItem) {
+                            meta.description = firstItem.description || firstItem.plot || "";
+                            meta.poster = firstItem.logo || firstItem.screenshot_uri || firstItem.cover || "";
+                            meta.background = firstItem.screenshot_uri || firstItem.logo || firstItem.cover || meta.poster;
+                        }
+
                         let allVideos = [];
-                        for (const item of (Array.isArray(items) ? items : Object.values(items))) {
-                            // Se for diretório (temporada), entramos para buscar episódios
+                        let flatEpCount = 1;
+                        for (const item of itemsArray) {
                             if (item.model === 'series' || item.is_dir == 1) {
                                 const sUrl = `${auth.api}type=series&action=get_ordered_list&movie_id=${item.id}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                                 const sRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 5000 });
                                 const eps = sRes.data?.js?.data || sRes.data?.js || [];
-                                const sNum = parseInt(item.name.replace(/\D/g, "")) || 1;
+                                
+                                // Extrair Temporada do Nome (Ex: "Season 1", "T2")
+                                let sMatch = item.name ? item.name.match(/(?:season|temporada|t)\s*(\d+)/i) : null;
+                                const sNum = item.season ? parseInt(item.season) : (sMatch ? parseInt(sMatch[1]) : 1);
+
                                 (Array.isArray(eps) ? eps : Object.values(eps)).forEach((ep, idx) => {
+                                    let eMatch = ep.name ? ep.name.match(/(?:episode|episódio|ep|e)\s*(\d+)/i) : null;
+                                    let eNum = ep.episode ? parseInt(ep.episode) : (eMatch ? parseInt(eMatch[1]) : (idx + 1));
+                                    
                                     allVideos.push({
                                         id: `xlv:${lIdx}:${ep.id || encodeURIComponent(ep.cmd)}:${encodeURIComponent(ep.name)}`,
-                                        title: ep.name || `Episódio ${idx + 1}`,
+                                        title: ep.name || `Episódio ${eNum}`,
                                         season: sNum,
-                                        episode: idx + 1
+                                        episode: eNum,
+                                        thumbnail: ep.screenshot_uri || ep.logo || meta.poster,
+                                        overview: ep.description || ""
                                     });
+                                });
+                            } else {
+                                // Lista Plana (Forçar a ir para Season 1)
+                                let sMatch = item.name ? item.name.match(/(?:season|temporada|t)\s*(\d+)/i) : null;
+                                let eMatch = item.name ? item.name.match(/(?:episode|episódio|ep|e)\s*(\d+)/i) : null;
+                                
+                                const sNum = parseInt(item.season) || (sMatch ? parseInt(sMatch[1]) : 1);
+                                const eNum = parseInt(item.episode) || (eMatch ? parseInt(eMatch[1]) : flatEpCount);
+                                flatEpCount++;
+
+                                allVideos.push({
+                                    id: `xlv:${lIdx}:${item.id || encodeURIComponent(item.cmd)}:${encodeURIComponent(item.name)}`,
+                                    title: item.name || `Episódio ${eNum}`,
+                                    season: sNum,
+                                    episode: eNum,
+                                    thumbnail: item.screenshot_uri || item.logo || meta.poster,
+                                    overview: item.description || ""
                                 });
                             }
                         }
