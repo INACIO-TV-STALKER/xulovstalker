@@ -236,52 +236,31 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
                 requestHeaders['Range'] = req.headers.range;
             }
 
-            const videoResponse = await axios({
-                method: 'get',
-                url: finalUrl,
-                headers: requestHeaders,
-                responseType: 'stream',
-                maxRedirects: 5,
-                // 🔥 TIMEOUT REMOVIDO! A TV agora pode dar infinitamente sem ser cortada
-                validateStatus: false
-            });
+const videoResponse = await axios({
+            method: 'get',
+            url: finalUrl,
+            headers: requestHeaders,
+            responseType: 'stream',
+            timeout: 0, // Garante que o Node não fecha a porta aos 20s
+            validateStatus: false
+        });
 
-            if (videoResponse.status >= 400) {
-                console.log(`[PROXY] ❌ Servidor IPTV rejeitou (Status: ${videoResponse.status})`);
-                return res.status(videoResponse.status).end();
-            }
+        if (videoResponse.status >= 400) {
+            return res.status(videoResponse.status).end();
+        }
 
-            res.status(videoResponse.status);
-            res.setHeader("Access-Control-Allow-Origin", "*");
+        // Cabeçalhos críticos para o Stremio não engasgar
+        res.status(200);
+        res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp2t");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Connection", "keep-alive"); // Diz à TV para não desligar
 
-            let cType = videoResponse.headers['content-type'];
-            if (!cType || cType === 'application/octet-stream' || cType === 'text/html') {
-                if (channelId.includes('.mkv')) cType = 'video/x-matroska';
-                else if (channelId.includes('.mp4')) cType = 'video/mp4';
-                else cType = type === 'tv' ? 'video/mp2t' : 'video/mp4';
-            }
-            res.setHeader("Content-Type", cType);
+        videoResponse.data.pipe(res);
 
-            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-
-            // Passar headers importantes para estabilidade
-            if (videoResponse.headers['accept-ranges']) res.setHeader('Accept-Ranges', videoResponse.headers['accept-ranges']);
-            if (videoResponse.headers['content-range']) res.setHeader('Content-Range', videoResponse.headers['content-range']);
-            if (videoResponse.headers['content-length']) res.setHeader('Content-Length', videoResponse.headers['content-length']);
-            
-            // Para TV em direto, garantir que o Stremio sabe que os dados vêm em pedaços contínuos
-            if (type === 'tv' && !videoResponse.headers['content-length']) {
-                res.setHeader('Transfer-Encoding', 'chunked');
-            }
-
-            videoResponse.data.pipe(res);
-
-            req.on('close', () => {
-                console.log(`[PROXY] ⏹️ Ligação encerrada pelo utilizador (${type} ${channelId}). A libertar RAM...`);
-                if (videoResponse.data) {
-                    videoResponse.data.destroy();
-                }
-            });
+        // Previne crash se mudares de canal
+        req.on('close', () => {
+            if (videoResponse.data) videoResponse.data.destroy();
+        });
 
         } catch (vidErr) {
             console.log(`[PROXY] 💀 Erro no stream: ${vidErr.message}`);
