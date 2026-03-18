@@ -99,10 +99,10 @@ const addon = {
                 const b = config.url.trim().replace(/\/$/, "");
                 const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
                 let act = type === "tv" ? "get_live_streams" : (type === "movie" ? "get_vod_streams" : "get_series");
-                
+
                 const cacheKey = `cat_data_${id}_${type}_${extra.genre || 'all'}`;
                 let cachedMetas = getCache(cacheKey);
-                
+
                 if (!cachedMetas) {
                     if (extra.genre && extra.genre !== "Predefinido") {
                         const cAct = type === "tv" ? "get_live_categories" : (type === "movie" ? "get_vod_categories" : "get_series_categories");
@@ -159,7 +159,7 @@ const addon = {
         const name = decodeURIComponent(parts[3] || "Conteúdo");
         const lists = this.parseConfig(configBase64); const config = lists[lIdx];
         let meta = { id, type, name, posterShape: type === "tv" ? "landscape" : "poster" };
-        
+
         if (type === 'movie') {
             try {
                 if (config?.type === 'xtream') {
@@ -197,7 +197,7 @@ const addon = {
                     const b = config.url.trim().replace(/\/$/, "");
                     const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
                     const res = await axios.get(`${api}&action=get_series_info&series_id=${sId}`, { timeout: 10000 });
-                    
+
                     if (res.data?.info) {
                         meta.description = res.data.info.plot || res.data.info.description || "";
                         meta.poster = res.data.info.cover || "";
@@ -232,7 +232,7 @@ const addon = {
                         const res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
                         const items = res.data?.js?.data || res.data?.js || [];
                         const itemsArray = Array.isArray(items) ? items : Object.values(items);
-                        
+
                         let firstItem = itemsArray[0];
                         if (firstItem) {
                             meta.description = firstItem.description || firstItem.plot || "";
@@ -247,14 +247,14 @@ const addon = {
                                 const sUrl = `${auth.api}type=series&action=get_ordered_list&movie_id=${item.id}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                                 const sRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 5000 });
                                 const eps = sRes.data?.js?.data || sRes.data?.js || [];
-                                
+
                                 let sMatch = item.name ? item.name.match(/(?:season|temporada|t)\s*(\d+)/i) : null;
                                 const sNum = item.season ? parseInt(item.season) : (sMatch ? parseInt(sMatch[1]) : 1);
 
                                 (Array.isArray(eps) ? eps : Object.values(eps)).forEach((ep, idx) => {
                                     let eMatch = ep.name ? ep.name.match(/(?:episode|episódio|ep|e)\s*(\d+)/i) : null;
                                     let eNum = ep.episode ? parseInt(ep.episode) : (eMatch ? parseInt(eMatch[1]) : (idx + 1));
-                                    
+
                                     allVideos.push({
                                         id: `xlv:${lIdx}:${ep.id || encodeURIComponent(ep.cmd)}:${encodeURIComponent(ep.name)}`,
                                         title: ep.name || `Episódio ${eNum}`,
@@ -267,7 +267,7 @@ const addon = {
                             } else {
                                 let sMatch = item.name ? item.name.match(/(?:season|temporada|t)\s*(\d+)/i) : null;
                                 let eMatch = item.name ? item.name.match(/(?:episode|episódio|ep|e)\s*(\d+)/i) : null;
-                                
+
                                 const sNum = parseInt(item.season) || (sMatch ? parseInt(sMatch[1]) : 1);
                                 const eNum = parseInt(item.episode) || (eMatch ? parseInt(eMatch[1]) : flatEpCount);
                                 flatEpCount++;
@@ -290,27 +290,41 @@ const addon = {
         return { meta };
     },
 
-    // A ÚNICA ZONA ALTERADA: Removi a complexidade que estava a "engasgar" o leitor do Stremio.
+    // A ÚNICA ZONA ALTERADA: Lógica robusta e infalível de streams para Android e Tizen
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":"); const lIdx = parseInt(parts[1]); const sId = parts[2];
         const name = decodeURIComponent(parts[3] || "Stream");
         const lists = this.parseConfig(configBase64); const config = lists[lIdx];
-        
-        // 1. XTREAM: Link direto sem headers pesados, arranca logo à primeira.
+
+        // 1. XTREAM: As 3 camadas de segurança para evitar que o ecrã fique preto ou caia
         if (config?.type === 'xtream') {
             const b = config.url.trim().replace(/\/$/, "");
-            let url = (type === 'tv') ? `${b}/${config.user}/${config.pass}/${sId}` : (sId.includes('.') ? `${b}/${type === 'series' ? 'series' : 'movie'}/${config.user}/${config.pass}/${sId}` : `${b}/movie/${config.user}/${config.pass}/${sId}.mp4`);
             
-            return { 
-                streams: [{ 
-                    url, 
-                    title: `🚀 Directo: ${name}`, 
-                    behaviorHints: { notWebReady: true } 
-                }] 
-            };
+            if (type === 'tv') {
+                return { 
+                    streams: [
+                        // Opção 1: Formato Original - Abre sempre imediatamente como antes
+                        { url: `${b}/${config.user}/${config.pass}/${sId}`, title: `📺 Directo (TS Original)`, behaviorHints: { notWebReady: true } },
+                        
+                        // Opção 2: Formato HLS Padrão - Ideal para Tizen se o painel suportar
+                        { url: `${b}/live/${config.user}/${config.pass}/${sId}.m3u8`, title: `🚀 HLS (Samsung/Android)`, behaviorHints: { notWebReady: true } },
+                        
+                        // Opção 3: Passagem pelo Proxy local - O "escudo" final contra cortes de ligação
+                        { url: `http://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`, title: `🛡️ Proxy (Anti-Queda)`, behaviorHints: { notWebReady: true } }
+                    ] 
+                };
+            } else {
+                let url = sId.includes('.') ? `${b}/${type === 'series' ? 'series' : 'movie'}/${config.user}/${config.pass}/${sId}` : `${b}/movie/${config.user}/${config.pass}/${sId}.mp4`;
+                return { 
+                    streams: [
+                        { url, title: `🚀 Directo: ${name}`, behaviorHints: { notWebReady: true } },
+                        { url: `http://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`, title: `🛡️ Proxy Estável`, behaviorHints: { notWebReady: true } }
+                    ] 
+                };
+            }
         }
-        
-        // 2. STALKER: Link extraído em milissegundos, limpo, sem estragar o player do Stremio
+
+        // 2. STALKER: Links extraídos com headers persistentes
         let streams = [];
         try {
             const auth = await addon.authenticate(config);
@@ -318,13 +332,21 @@ const addon = {
                 const cmdType = type === "tv" ? "itv" : "vod";
                 const res = await axios.get(`${auth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(sId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, { headers: auth.authData.headers, timeout: 5000 });
                 let cmdUrl = res.data?.js?.cmd || res.data?.js;
-                
+
                 if (typeof cmdUrl === 'string' && cmdUrl.startsWith('http')) {
                     const cleanUrl = cmdUrl.split(' ').pop(); // Remove lixos do servidor como "ffmpeg http..."
                     streams.push({ 
                         url: cleanUrl, 
-                        title: `⚡ Rápido: ${name}`, 
-                        behaviorHints: { notWebReady: true } 
+                        title: `⚡ Directo TV`, 
+                        behaviorHints: { 
+                            notWebReady: true,
+                            proxyHeaders: {
+                                request: {
+                                    "User-Agent": "Mozilla/5.0 (SMART-TV; LINUX; Tizen 5.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/5.0 TV Safari/538.1",
+                                    "Connection": "keep-alive"
+                                }
+                            }
+                        } 
                     });
                 }
             }
@@ -333,7 +355,7 @@ const addon = {
         const pUrl = `http://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
         streams.push({ 
             url: pUrl, 
-            title: `🛡️ Fluxo Estável (Proxy)`, 
+            title: `🛡️ Proxy (Anti-Queda)`, 
             behaviorHints: { notWebReady: true } 
         });
 
@@ -342,3 +364,4 @@ const addon = {
 };
 
 module.exports = addon;
+
