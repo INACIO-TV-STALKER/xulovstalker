@@ -290,26 +290,19 @@ const addon = {
         return { meta };
     },
 
-    // A ÚNICA ZONA ALTERADA: Lógica robusta e infalível de streams para Android e Tizen
+    // A ÚNICA ALTERAÇÃO NESTE CÓDIGO: Resolução Limpa do Ecrã Preto (Correção Localhost + Pipe Inject)
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":"); const lIdx = parseInt(parts[1]); const sId = parts[2];
         const name = decodeURIComponent(parts[3] || "Stream");
         const lists = this.parseConfig(configBase64); const config = lists[lIdx];
 
-        // 1. XTREAM: As 3 camadas de segurança para evitar que o ecrã fique preto ou caia
         if (config?.type === 'xtream') {
             const b = config.url.trim().replace(/\/$/, "");
-            
             if (type === 'tv') {
                 return { 
                     streams: [
-                        // Opção 1: Formato Original - Abre sempre imediatamente como antes
-                        { url: `${b}/${config.user}/${config.pass}/${sId}`, title: `📺 Directo (TS Original)`, behaviorHints: { notWebReady: true } },
-                        
-                        // Opção 2: Formato HLS Padrão - Ideal para Tizen se o painel suportar
+                        { url: `${b}/${config.user}/${config.pass}/${sId}`, title: `📺 Directo (TS)`, behaviorHints: { notWebReady: true } },
                         { url: `${b}/live/${config.user}/${config.pass}/${sId}.m3u8`, title: `🚀 HLS (Samsung/Android)`, behaviorHints: { notWebReady: true } },
-                        
-                        // Opção 3: Passagem pelo Proxy local - O "escudo" final contra cortes de ligação
                         { url: `http://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`, title: `🛡️ Proxy (Anti-Queda)`, behaviorHints: { notWebReady: true } }
                     ] 
                 };
@@ -324,7 +317,6 @@ const addon = {
             }
         }
 
-        // 2. STALKER: Links extraídos com headers persistentes
         let streams = [];
         try {
             const auth = await addon.authenticate(config);
@@ -333,29 +325,41 @@ const addon = {
                 const res = await axios.get(`${auth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(sId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, { headers: auth.authData.headers, timeout: 5000 });
                 let cmdUrl = res.data?.js?.cmd || res.data?.js;
 
-                if (typeof cmdUrl === 'string' && cmdUrl.startsWith('http')) {
-                    const cleanUrl = cmdUrl.split(' ').pop(); // Remove lixos do servidor como "ffmpeg http..."
-                    streams.push({ 
-                        url: cleanUrl, 
-                        title: `⚡ Directo TV`, 
-                        behaviorHints: { 
-                            notWebReady: true,
-                            proxyHeaders: {
-                                request: {
-                                    "User-Agent": "Mozilla/5.0 (SMART-TV; LINUX; Tizen 5.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/5.0 TV Safari/538.1",
-                                    "Connection": "keep-alive"
-                                }
-                            }
-                        } 
-                    });
+                if (typeof cmdUrl === 'string') {
+                    let cleanUrl = cmdUrl.split(' ').pop();
+                    
+                    if (cleanUrl.startsWith('http')) {
+                        // FIX 1: RESOLUÇÃO DO ECRÃ PRETO (O Bug do Localhost)
+                        // Muitos portais mandam a stream mascarada como localhost e o Stremio falha.
+                        const portalMatch = config.url.match(/^(https?:\/\/[^\/]+)/i);
+                        const portalBase = portalMatch ? portalMatch[1] : '';
+                        if (portalBase && (cleanUrl.includes('localhost') || cleanUrl.includes('127.0.0.1'))) {
+                            cleanUrl = cleanUrl.replace(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i, portalBase);
+                        }
+
+                        // FIX 2: INJEÇÃO SEGURA ("Pipe Syntax" suportada pelo ExoPlayer/Samsung)
+                        // Evitamos os proxyHeaders (que corrompiam o vídeo) e enviamos a identidade colada ao link.
+                        const exoUrl = `${cleanUrl}|User-Agent=Mozilla/5.0 (QtEmbedded; U; Linux; C) MAG200 stbapp`;
+
+                        streams.push({ 
+                            url: exoUrl, 
+                            title: `⚡ Stalker Directo (ExoPlayer)`, 
+                            behaviorHints: { notWebReady: true } 
+                        });
+                        
+                        streams.push({ 
+                            url: cleanUrl, 
+                            title: `📺 Stalker Puro (Básico)`, 
+                            behaviorHints: { notWebReady: true } 
+                        });
+                    }
                 }
             }
         } catch(e) {}
 
-        const pUrl = `http://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
         streams.push({ 
-            url: pUrl, 
-            title: `🛡️ Proxy (Anti-Queda)`, 
+            url: `http://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`, 
+            title: `🛡️ Stalker Estável (Proxy)`, 
             behaviorHints: { notWebReady: true } 
         });
 

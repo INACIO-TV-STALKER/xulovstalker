@@ -5,6 +5,14 @@ const http = require("http");
 const https = require("https");
 const addon = require("./addon.cjs");
 
+// 🔹 A CORREÇÃO DOS 14 SEGUNDOS: Keep-Alive Global
+// Obriga o Node.js a manter a ligação TCP permanentemente aberta com o portal Stalker,
+// imitando o comportamento contínuo de uma box física.
+const httpAgent = new http.Agent({ keepAlive: true, keepAliveMsecs: 30000, maxSockets: Infinity });
+const httpsAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 30000, maxSockets: Infinity });
+axios.defaults.httpAgent = httpAgent;
+axios.defaults.httpsAgent = httpsAgent;
+
 const PORT = process.env.PORT || 3000;
 const app = express();
 
@@ -185,7 +193,7 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         // --- LÓGICA XTREAM ---
         if (configData.type === 'xtream') {
             const baseUrl = configData.url.replace(/\/$/, "");
-            
+
             requestHeaders['User-Agent'] = 'VLC/3.0.18 LibVLC/3.0.18';
             requestHeaders['Accept'] = '*/*';
 
@@ -204,7 +212,7 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             if (!auth) return res.status(401).end();
 
             let sUrl = "";
-            
+
             if (type === "movie" || type === "series") {
                 let stalkerCmd = channelId;
                 try { 
@@ -232,35 +240,38 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
         // --- CÓDIGO DE REPASSE E ESTABILIZAÇÃO ---
         try {
+            // 🔹 ADICIONADO: Previne que o Node assuma timeout por falta de atividade do cliente (Stremio)
+            req.socket.setTimeout(0);
+
             if (req.headers.range) {
                 requestHeaders['Range'] = req.headers.range;
             }
 
-const videoResponse = await axios({
-            method: 'get',
-            url: finalUrl,
-            headers: requestHeaders,
-            responseType: 'stream',
-            timeout: 0, // Garante que o Node não fecha a porta aos 20s
-            validateStatus: false
-        });
+            const videoResponse = await axios({
+                method: 'get',
+                url: finalUrl,
+                headers: requestHeaders,
+                responseType: 'stream',
+                timeout: 0, // Garante que o Node não fecha a porta aos 20s
+                validateStatus: false
+            });
 
-        if (videoResponse.status >= 400) {
-            return res.status(videoResponse.status).end();
-        }
+            if (videoResponse.status >= 400) {
+                return res.status(videoResponse.status).end();
+            }
 
-        // Cabeçalhos críticos para o Stremio não engasgar
-        res.status(200);
-        res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp2t");
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        res.setHeader("Connection", "keep-alive"); // Diz à TV para não desligar
+            // Cabeçalhos críticos para o Stremio não engasgar
+            res.status(200);
+            res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp2t");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("Connection", "keep-alive"); // Diz à TV para não desligar
 
-        videoResponse.data.pipe(res);
+            videoResponse.data.pipe(res);
 
-        // Previne crash se mudares de canal
-        req.on('close', () => {
-            if (videoResponse.data) videoResponse.data.destroy();
-        });
+            // Previne crash se mudares de canal
+            req.on('close', () => {
+                if (videoResponse.data) videoResponse.data.destroy();
+            });
 
         } catch (vidErr) {
             console.log(`[PROXY] 💀 Erro no stream: ${vidErr.message}`);
