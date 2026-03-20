@@ -84,7 +84,7 @@ const addon = {
         }));
 
         const addonName = lists.map(l => l.name).filter(Boolean).join(" + ") || "XuloV Hub";
-        const m = { id: "org.xulov.stalker", version: "5.1.14", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
+        const m = { id: "org.xulov.stalker", version: "5.1.15", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
         setCache(cacheKey, m, 60); return m;
     },
 
@@ -123,7 +123,7 @@ const addon = {
                 let cachedMetas = getCache(cacheKey);
 
                 if (!cachedMetas) {
-                    const auth = await this.authenticate(config);
+                    const auth = await addon.authenticate(config);
                     if (auth) {
                         const sType = type === "tv" ? "itv" : (type === "movie" ? "vod" : "series");
                         const sAct = type === "tv" ? "get_all_channels" : "get_ordered_list";
@@ -175,7 +175,7 @@ const addon = {
                         if (res.data.info.cast) meta.cast = res.data.info.cast.split(',').map(c => c.trim());
                     }
                 } else {
-                    const auth = await this.authenticate(config);
+                    const auth = await addon.authenticate(config);
                     if (auth) {
                         const url = `${auth.api}type=vod&action=get_info&movie_id=${sId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                         const res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
@@ -226,7 +226,7 @@ const addon = {
                         meta.videos = videos.sort((a, b) => a.season - b.season || a.episode - b.episode);
                     }
                 } else {
-                    const auth = await this.authenticate(config);
+                    const auth = await addon.authenticate(config);
                     if (auth) {
                         const url = `${auth.api}type=series&action=get_ordered_list&movie_id=${sId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                         const res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
@@ -244,16 +244,13 @@ const addon = {
                         let flatEpCount = 1;
 
                         for (const item of itemsArray) {
-                            // CÓDIGO INFALÍVEL PARA DETETAR PASTAS DE TEMPORADAS NO STALKER
                             const isDir = item.is_dir == 1 || item.type === 'season' || (item.name && /season|temporada|t\s*\d+/i.test(item.name) && !item.cmd);
 
                             if (isDir) {
-                                // Encontrou uma pasta de Temporada. Vai ler o número da temporada.
                                 let sMatch = item.name ? item.name.match(/(?:season|temporada|t)\s*(\d+)/i) : null;
                                 let sNum = sMatch ? parseInt(sMatch[1]) : 1;
 
                                 try {
-                                    // Puxa os episódios DENTRO desta pasta
                                     const sUrl = `${auth.api}type=series&action=get_ordered_list&movie_id=${item.id}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                                     const sRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 5000 });
                                     const eps = sRes.data?.js?.data || sRes.data?.js || [];
@@ -280,7 +277,6 @@ const addon = {
                                     });
                                 } catch (e) {}
                             } else {
-                                // É um episódio solto
                                 let seMatch = item.name ? item.name.match(/S(\d+).*?E(\d+)/i) : null;
                                 let sMatch = item.name ? item.name.match(/(?:season|temporada|t)\s*(\d+)/i) : null;
                                 let eMatch = item.name ? item.name.match(/(?:episode|episódio|ep|e)\s*(\d+)/i) : null;
@@ -316,7 +312,6 @@ const addon = {
 
         if (config?.type === 'xtream') {
             const b = config.url.trim().replace(/\/$/, "");
-
             if (type === 'tv') {
                 return { 
                     streams: [
@@ -342,55 +337,62 @@ const addon = {
             if (auth) {
                 const cmdType = type === "tv" ? "itv" : "vod";
                 let stalkerCmd = decodeURIComponent(sId);
-                
                 let cleanUrl = "";
 
-                // Verifica se o URL direto já vem cravado no próprio ID/Cmd
-                if (stalkerCmd.startsWith('http') || stalkerCmd.startsWith('ffmpeg http')) {
-                    cleanUrl = stalkerCmd.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+                // Função de limpeza para varrer os malfadados "localhost"
+                const processUrl = (rawCmd) => {
+                    let u = rawCmd.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+                    if (u.includes('localhost') || u.includes('127.0.0.1')) {
+                        const parsedApi = new URL(auth.api);
+                        u = u.replace(/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?/, `${parsedApi.protocol}//${parsedApi.host}`);
+                    }
+                    if (u.startsWith('//')) u = 'http:' + u;
+                    else if (u.startsWith('/')) {
+                        const parsedApi = new URL(auth.api);
+                        u = `${parsedApi.protocol}//${parsedApi.host}${u}`;
+                    }
+                    return u;
+                };
+
+                if (stalkerCmd.match(/^(http|ffrt|ffmpeg|ffrt2|rtmp)/)) {
+                    cleanUrl = processUrl(stalkerCmd);
                 } else {
-                    // Pede a autorização e o link gerado ao portal Stalker
                     const linkUrl = `${auth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                     const res = await axios.get(linkUrl, { headers: auth.authData.headers, timeout: 5000 });
                     let cmdUrl = res.data?.js?.cmd || res.data?.js;
                     
-                    if (typeof cmdUrl === 'string') {
-                        cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+                    if (typeof cmdUrl === 'string' && cmdUrl.trim().length > 0) {
+                        cleanUrl = processUrl(cmdUrl);
+                    } else if (cmdType === "itv") {
+                        // Fallback de segurança para canais TV se o portal exigir "ch" antes do ID
+                        const fallbackUrl = `${auth.api}type=itv&action=create_link&cmd=ch${encodeURIComponent(stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                        const fbRes = await axios.get(fallbackUrl, { headers: auth.authData.headers, timeout: 5000 });
+                        let fbCmdUrl = fbRes.data?.js?.cmd || fbRes.data?.js;
+                        if (typeof fbCmdUrl === 'string' && fbCmdUrl.trim().length > 0) {
+                            cleanUrl = processUrl(fbCmdUrl);
+                        }
                     }
                 }
 
-                if (cleanUrl) {
-                    // Previne links relativos manhosos que alguns Stalkers enviam
-                    if (cleanUrl.startsWith('//')) cleanUrl = 'http:' + cleanUrl;
-                    else if (cleanUrl.startsWith('/')) {
-                        const u = new URL(auth.api);
-                        cleanUrl = `${u.protocol}//${u.host}${cleanUrl}`;
-                    }
-
-                    if (cleanUrl.startsWith('http')) {
-                        const tituloDirecto = type === "tv" ? "⚡ Directo TV" : "🎬 Directo Filme/Série";
-                        
-                        streams.push({ 
-                            url: cleanUrl, 
-                            title: tituloDirecto, 
-                            behaviorHints: { 
-                                notWebReady: true,
-                                // INJEÇÃO MAG BOX PARA VOD: Evita erro 403 Forbidden no portal!
-                                proxyHeaders: {
-                                    request: {
-                                        "User-Agent": auth.authData.headers["User-Agent"],
-                                        "Cookie": auth.authData.headers["Cookie"] || "",
-                                        "Connection": "keep-alive"
-                                    }
+                if (cleanUrl && cleanUrl.startsWith('http')) {
+                    const tituloDirecto = type === "tv" ? "⚡ Directo TV" : "🎬 Directo Filme/Série";
+                    
+                    streams.push({ 
+                        url: cleanUrl, 
+                        title: tituloDirecto, 
+                        behaviorHints: { 
+                            notWebReady: true,
+                            proxyHeaders: {
+                                request: {
+                                    "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 27211 Safari/533.3"
                                 }
-                            } 
-                        });
-                    }
+                            }
+                        } 
+                    });
                 }
             }
         } catch(e) {}
 
-        // O nosso proxy blindado do Render continua lá sempre como opção de fallback
         const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
         streams.push({ 
             url: pUrl, 
