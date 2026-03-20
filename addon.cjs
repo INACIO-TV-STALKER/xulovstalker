@@ -171,8 +171,6 @@ const addon = {
                         meta.description = res.data.info.plot || res.data.info.description || "";
                         meta.poster = res.data.info.cover || "";
                         meta.background = (res.data.info.backdrop_path && res.data.info.backdrop_path.length > 0) ? res.data.info.backdrop_path[0] : meta.poster;
-                        if (res.data.info.director) meta.director = [res.data.info.director];
-                        if (res.data.info.cast) meta.cast = res.data.info.cast.split(',').map(c => c.trim());
                     }
                 } else {
                     const auth = await addon.authenticate(config);
@@ -184,8 +182,6 @@ const addon = {
                             meta.description = info.description || info.plot || "";
                             meta.poster = info.screenshot_uri || info.logo || info.cover || "";
                             meta.background = info.screenshot_uri || meta.poster;
-                            if (info.director) meta.director = [info.director];
-                            if (info.actors) meta.cast = info.actors.split(',').map(c => c.trim());
                         }
                     }
                 }
@@ -201,11 +197,7 @@ const addon = {
                     if (res.data?.info) {
                         meta.description = res.data.info.plot || res.data.info.description || "";
                         meta.poster = res.data.info.cover || "";
-                        if (res.data.info.backdrop_path && res.data.info.backdrop_path.length > 0) {
-                            meta.background = res.data.info.backdrop_path[0];
-                        } else {
-                            meta.background = meta.poster;
-                        }
+                        meta.background = (res.data.info.backdrop_path && res.data.info.backdrop_path.length > 0) ? res.data.info.backdrop_path[0] : meta.poster;
                     }
 
                     if (res.data?.episodes) {
@@ -243,12 +235,13 @@ const addon = {
                         let allVideos = [];
                         let flatEpCount = 1;
 
+                        // INTELIGÊNCIA DE PASTAS/EPISÓDIOS STALKER
                         for (const item of itemsArray) {
                             const isDir = item.is_dir == 1 || item.type === 'season' || (item.name && /season|temporada|t\s*\d+/i.test(item.name) && !item.cmd);
 
                             if (isDir) {
-                                let sMatch = item.name ? item.name.match(/(?:season|temporada|t)\s*(\d+)/i) : null;
-                                let sNum = sMatch ? parseInt(sMatch[1]) : 1;
+                                let sMatch = item.name ? item.name.match(/(?:season|temporada|t|s)[\s\-\.]*(\d+)/i) : null;
+                                let folderSeason = sMatch ? parseInt(sMatch[1]) : 1;
 
                                 try {
                                     const sUrl = `${auth.api}type=series&action=get_ordered_list&movie_id=${item.id}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
@@ -257,17 +250,27 @@ const addon = {
                                     const epsArray = Array.isArray(eps) ? eps : Object.values(eps);
 
                                     epsArray.forEach((ep, idx) => {
-                                        let eMatch = ep.name ? ep.name.match(/(?:episode|episódio|ep|e)\s*(\d+)/i) : null;
-                                        let seMatch = ep.name ? ep.name.match(/S(\d+).*?E(\d+)/i) : null;
+                                        let epName = ep.name || "";
+                                        let seMatch = epName.match(/S(\d+)[\s\-\.]*E(\d+)/i) || epName.match(/(\d+)x(\d+)/i);
+                                        let eMatch = epName.match(/(?:episode|episódio|ep|e)[\s\-\.]*(\d+)/i);
 
-                                        let finalS = seMatch ? parseInt(seMatch[1]) : sNum;
-                                        let finalE = ep.episode ? parseInt(ep.episode) : (seMatch ? parseInt(seMatch[2]) : (eMatch ? parseInt(eMatch[1]) : (idx + 1)));
+                                        let finalS = folderSeason;
+                                        let finalE = idx + 1;
+
+                                        if (seMatch) {
+                                            finalS = parseInt(seMatch[1]);
+                                            finalE = parseInt(seMatch[2]);
+                                        } else if (eMatch) {
+                                            finalE = parseInt(eMatch[1]);
+                                        } else if (ep.episode) {
+                                            finalE = parseInt(ep.episode);
+                                        }
 
                                         const playId = ep.cmd || ep.id;
                                         if (playId) {
                                             allVideos.push({
-                                                id: `xlv:${lIdx}:${encodeURIComponent(playId)}:${encodeURIComponent(ep.name || 'Episódio ' + finalE)}`,
-                                                title: ep.name || `Episódio ${finalE}`,
+                                                id: `xlv:${lIdx}:${encodeURIComponent(playId)}:${encodeURIComponent(epName || 'Episódio ' + finalE)}`,
+                                                title: epName || `Episódio ${finalE}`,
                                                 season: finalS,
                                                 episode: finalE,
                                                 thumbnail: ep.screenshot_uri || ep.logo || meta.poster,
@@ -277,27 +280,38 @@ const addon = {
                                     });
                                 } catch (e) {}
                             } else {
-                                let seMatch = item.name ? item.name.match(/S(\d+).*?E(\d+)/i) : null;
-                                let sMatch = item.name ? item.name.match(/(?:season|temporada|t)\s*(\d+)/i) : null;
-                                let eMatch = item.name ? item.name.match(/(?:episode|episódio|ep|e)\s*(\d+)/i) : null;
+                                let epName = item.name || "";
+                                let seMatch = epName.match(/S(\d+)[\s\-\.]*E(\d+)/i) || epName.match(/(\d+)x(\d+)/i);
+                                let sMatch = epName.match(/(?:season|temporada|t|s)[\s\-\.]*(\d+)/i);
+                                let eMatch = epName.match(/(?:episode|episódio|ep|e)[\s\-\.]*(\d+)/i);
 
-                                const sNum = item.season ? parseInt(item.season) : (seMatch ? parseInt(seMatch[1]) : (sMatch ? parseInt(sMatch[1]) : 1));
-                                const eNum = item.episode ? parseInt(item.episode) : (seMatch ? parseInt(seMatch[2]) : (eMatch ? parseInt(eMatch[1]) : flatEpCount++));
+                                let finalS = item.season ? parseInt(item.season) : 1;
+                                let finalE = item.episode ? parseInt(item.episode) : flatEpCount;
+
+                                if (seMatch) {
+                                    finalS = parseInt(seMatch[1]);
+                                    finalE = parseInt(seMatch[2]);
+                                } else {
+                                    if (sMatch) finalS = parseInt(sMatch[1]);
+                                    if (eMatch) finalE = parseInt(eMatch[1]);
+                                }
+                                flatEpCount++;
 
                                 const playId = item.cmd || item.id;
                                 if (playId) {
                                     allVideos.push({
-                                        id: `xlv:${lIdx}:${encodeURIComponent(playId)}:${encodeURIComponent(item.name || 'Episódio ' + eNum)}`,
-                                        title: item.name || `Episódio ${eNum}`,
-                                        season: sNum,
-                                        episode: eNum,
+                                        id: `xlv:${lIdx}:${encodeURIComponent(playId)}:${encodeURIComponent(epName || 'Episódio ' + finalE)}`,
+                                        title: epName || `Episódio ${finalE}`,
+                                        season: finalS,
+                                        episode: finalE,
                                         thumbnail: item.screenshot_uri || item.logo || meta.poster,
                                         overview: item.description || ""
                                     });
                                 }
                             }
                         }
-                        meta.videos = allVideos;
+                        // O STREMIO PRECISA DESTA ORDENAÇÃO MATEMÁTICA PARA CRIAR AS ABAS
+                        meta.videos = allVideos.sort((a, b) => a.season - b.season || a.episode - b.episode);
                     }
                 }
             } catch (e) {}
@@ -305,6 +319,7 @@ const addon = {
         return { meta };
     },
 
+    // RESOLVIDO: Separação limpa entre TV (sem engasgos no player) e Filmes/Séries (com identidade)
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":"); const lIdx = parseInt(parts[1]); const sId = parts[2];
         const name = decodeURIComponent(parts[3] || "Stream");
@@ -339,56 +354,45 @@ const addon = {
                 let stalkerCmd = decodeURIComponent(sId);
                 let cleanUrl = "";
 
-                // Função de limpeza para varrer os malfadados "localhost"
-                const processUrl = (rawCmd) => {
-                    let u = rawCmd.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-                    if (u.includes('localhost') || u.includes('127.0.0.1')) {
-                        const parsedApi = new URL(auth.api);
-                        u = u.replace(/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?/, `${parsedApi.protocol}//${parsedApi.host}`);
-                    }
-                    if (u.startsWith('//')) u = 'http:' + u;
-                    else if (u.startsWith('/')) {
-                        const parsedApi = new URL(auth.api);
-                        u = `${parsedApi.protocol}//${parsedApi.host}${u}`;
-                    }
-                    return u;
-                };
-
-                if (stalkerCmd.match(/^(http|ffrt|ffmpeg|ffrt2|rtmp)/)) {
-                    cleanUrl = processUrl(stalkerCmd);
+                // Séries frequentemente enviam o comando já cravado no ID
+                if (stalkerCmd.startsWith('http') || stalkerCmd.startsWith('ffmpeg') || stalkerCmd.startsWith('ffrt')) {
+                    cleanUrl = stalkerCmd.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                 } else {
                     const linkUrl = `${auth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                     const res = await axios.get(linkUrl, { headers: auth.authData.headers, timeout: 5000 });
                     let cmdUrl = res.data?.js?.cmd || res.data?.js;
                     
-                    if (typeof cmdUrl === 'string' && cmdUrl.trim().length > 0) {
-                        cleanUrl = processUrl(cmdUrl);
-                    } else if (cmdType === "itv") {
-                        // Fallback de segurança para canais TV se o portal exigir "ch" antes do ID
-                        const fallbackUrl = `${auth.api}type=itv&action=create_link&cmd=ch${encodeURIComponent(stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                        const fbRes = await axios.get(fallbackUrl, { headers: auth.authData.headers, timeout: 5000 });
-                        let fbCmdUrl = fbRes.data?.js?.cmd || fbRes.data?.js;
-                        if (typeof fbCmdUrl === 'string' && fbCmdUrl.trim().length > 0) {
-                            cleanUrl = processUrl(fbCmdUrl);
-                        }
+                    if (typeof cmdUrl === 'string') {
+                        cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                     }
                 }
 
                 if (cleanUrl && cleanUrl.startsWith('http')) {
-                    const tituloDirecto = type === "tv" ? "⚡ Directo TV" : "🎬 Directo Filme/Série";
-                    
-                    streams.push({ 
-                        url: cleanUrl, 
-                        title: tituloDirecto, 
-                        behaviorHints: { 
-                            notWebReady: true,
-                            proxyHeaders: {
-                                request: {
-                                    "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 27211 Safari/533.3"
+                    // SEPARAÇÃO CRÍTICA: TV pura vs Filmes c/ Headers
+                    if (type === "tv") {
+                        // Canais revertidos ao código seguro, sem injeções que causam ecrã preto
+                        streams.push({ 
+                            url: cleanUrl, 
+                            title: `⚡ Directo TV`, 
+                            behaviorHints: { notWebReady: true } 
+                        });
+                    } else {
+                        // Filmes/Séries c/ injecção da Box MAG para evitar o erro 403 do portal
+                        streams.push({ 
+                            url: cleanUrl, 
+                            title: `🎬 Directo Filme/Série`, 
+                            behaviorHints: { 
+                                notWebReady: true,
+                                proxyHeaders: {
+                                    request: {
+                                        "User-Agent": auth.authData.headers["User-Agent"],
+                                        "Cookie": auth.authData.headers["Cookie"] || "",
+                                        "Connection": "keep-alive"
+                                    }
                                 }
-                            }
-                        } 
-                    });
+                            } 
+                        });
+                    }
                 }
             }
         } catch(e) {}
@@ -396,7 +400,7 @@ const addon = {
         const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
         streams.push({ 
             url: pUrl, 
-            title: `🛡️ Proxy Estável (Render)`, 
+            title: `🛡️ Proxy (Estável)`, 
             behaviorHints: { notWebReady: true } 
         });
 
