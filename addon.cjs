@@ -84,7 +84,7 @@ const addon = {
         }));
 
         const addonName = lists.map(l => l.name).filter(Boolean).join(" + ") || "XuloV Hub";
-        const m = { id: "org.xulov.stalker", version: "5.1.15", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
+        const m = { id: "org.xulov.stalker", version: "5.1.16", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
         setCache(cacheKey, m, 60); return m;
     },
 
@@ -190,6 +190,7 @@ const addon = {
         else if (type === 'series') {
             try {
                 if (config?.type === 'xtream') {
+                    // Mantido intocável
                     const b = config.url.trim().replace(/\/$/, "");
                     const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
                     const res = await axios.get(`${api}&action=get_series_info&series_id=${sId}`, { timeout: 10000 });
@@ -218,6 +219,7 @@ const addon = {
                         meta.videos = videos.sort((a, b) => a.season - b.season || a.episode - b.episode);
                     }
                 } else {
+                    // ORGANIZAÇÃO STALKER - LÓGICA SIMPLIFICADA
                     const auth = await addon.authenticate(config);
                     if (auth) {
                         const url = `${auth.api}type=series&action=get_ordered_list&movie_id=${sId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
@@ -225,23 +227,19 @@ const addon = {
                         const items = res.data?.js?.data || res.data?.js || [];
                         const itemsArray = Array.isArray(items) ? items : Object.values(items);
 
-                        let firstItem = itemsArray[0];
-                        if (firstItem) {
-                            meta.description = firstItem.description || firstItem.plot || "";
-                            meta.poster = firstItem.logo || firstItem.screenshot_uri || firstItem.cover || "";
-                            meta.background = firstItem.screenshot_uri || firstItem.logo || firstItem.cover || meta.poster;
+                        if (itemsArray.length > 0) {
+                            meta.poster = itemsArray[0].logo || itemsArray[0].screenshot_uri || itemsArray[0].cover || "";
+                            meta.description = itemsArray[0].description || "";
                         }
 
                         let allVideos = [];
                         let flatEpCount = 1;
 
-                        // INTELIGÊNCIA DE PASTAS/EPISÓDIOS STALKER
                         for (const item of itemsArray) {
-                            const isDir = item.is_dir == 1 || item.type === 'season' || (item.name && /season|temporada|t\s*\d+/i.test(item.name) && !item.cmd);
-
-                            if (isDir) {
-                                let sMatch = item.name ? item.name.match(/(?:season|temporada|t|s)[\s\-\.]*(\d+)/i) : null;
-                                let folderSeason = sMatch ? parseInt(sMatch[1]) : 1;
+                            // Se for pasta de temporada
+                            if (item.is_dir == 1 || item.type === 'season') {
+                                let sMatch = item.name ? item.name.match(/(\d+)/) : null;
+                                let seasonNum = sMatch ? parseInt(sMatch[1]) : 1;
 
                                 try {
                                     const sUrl = `${auth.api}type=series&action=get_ordered_list&movie_id=${item.id}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
@@ -250,68 +248,37 @@ const addon = {
                                     const epsArray = Array.isArray(eps) ? eps : Object.values(eps);
 
                                     epsArray.forEach((ep, idx) => {
-                                        let epName = ep.name || "";
-                                        let seMatch = epName.match(/S(\d+)[\s\-\.]*E(\d+)/i) || epName.match(/(\d+)x(\d+)/i);
-                                        let eMatch = epName.match(/(?:episode|episódio|ep|e)[\s\-\.]*(\d+)/i);
-
-                                        let finalS = folderSeason;
-                                        let finalE = idx + 1;
-
-                                        if (seMatch) {
-                                            finalS = parseInt(seMatch[1]);
-                                            finalE = parseInt(seMatch[2]);
-                                        } else if (eMatch) {
-                                            finalE = parseInt(eMatch[1]);
-                                        } else if (ep.episode) {
-                                            finalE = parseInt(ep.episode);
-                                        }
-
+                                        let epName = ep.name || `Episódio ${idx + 1}`;
+                                        let eMatch = epName.match(/(?:ep|e|episódio)[\s\-\.]*(\d+)/i) || epName.match(/(\d+)/);
+                                        let epNum = ep.episode ? parseInt(ep.episode) : (eMatch ? parseInt(eMatch[1]) : (idx + 1));
+                                        
                                         const playId = ep.cmd || ep.id;
                                         if (playId) {
                                             allVideos.push({
-                                                id: `xlv:${lIdx}:${encodeURIComponent(playId)}:${encodeURIComponent(epName || 'Episódio ' + finalE)}`,
-                                                title: epName || `Episódio ${finalE}`,
-                                                season: finalS,
-                                                episode: finalE,
-                                                thumbnail: ep.screenshot_uri || ep.logo || meta.poster,
-                                                overview: ep.description || ""
+                                                id: `xlv:${lIdx}:${encodeURIComponent(playId)}:${encodeURIComponent(epName)}`,
+                                                title: epName,
+                                                season: seasonNum,
+                                                episode: epNum,
+                                                thumbnail: ep.screenshot_uri || meta.poster
                                             });
                                         }
                                     });
                                 } catch (e) {}
                             } else {
-                                let epName = item.name || "";
-                                let seMatch = epName.match(/S(\d+)[\s\-\.]*E(\d+)/i) || epName.match(/(\d+)x(\d+)/i);
-                                let sMatch = epName.match(/(?:season|temporada|t|s)[\s\-\.]*(\d+)/i);
-                                let eMatch = epName.match(/(?:episode|episódio|ep|e)[\s\-\.]*(\d+)/i);
-
-                                let finalS = item.season ? parseInt(item.season) : 1;
-                                let finalE = item.episode ? parseInt(item.episode) : flatEpCount;
-
-                                if (seMatch) {
-                                    finalS = parseInt(seMatch[1]);
-                                    finalE = parseInt(seMatch[2]);
-                                } else {
-                                    if (sMatch) finalS = parseInt(sMatch[1]);
-                                    if (eMatch) finalE = parseInt(eMatch[1]);
-                                }
-                                flatEpCount++;
-
+                                // Se for episódio solto sem pasta
                                 const playId = item.cmd || item.id;
                                 if (playId) {
                                     allVideos.push({
-                                        id: `xlv:${lIdx}:${encodeURIComponent(playId)}:${encodeURIComponent(epName || 'Episódio ' + finalE)}`,
-                                        title: epName || `Episódio ${finalE}`,
-                                        season: finalS,
-                                        episode: finalE,
-                                        thumbnail: item.screenshot_uri || item.logo || meta.poster,
-                                        overview: item.description || ""
+                                        id: `xlv:${lIdx}:${encodeURIComponent(playId)}:${encodeURIComponent(item.name || 'Episódio ' + flatEpCount)}`,
+                                        title: item.name || `Episódio ${flatEpCount}`,
+                                        season: 1,
+                                        episode: flatEpCount++,
+                                        thumbnail: item.screenshot_uri || meta.poster
                                     });
                                 }
                             }
                         }
-                        // O STREMIO PRECISA DESTA ORDENAÇÃO MATEMÁTICA PARA CRIAR AS ABAS
-                        meta.videos = allVideos.sort((a, b) => a.season - b.season || a.episode - b.episode);
+                        meta.videos = allVideos;
                     }
                 }
             } catch (e) {}
@@ -319,7 +286,7 @@ const addon = {
         return { meta };
     },
 
-    // RESOLVIDO: Separação limpa entre TV (sem engasgos no player) e Filmes/Séries (com identidade)
+    // RESOLVIDO: REVERTIDO À VERSÃO ORIGINAL ESTÁVEL + CORREÇÃO TYPE VOD NAS SÉRIES
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":"); const lIdx = parseInt(parts[1]); const sId = parts[2];
         const name = decodeURIComponent(parts[3] || "Stream");
@@ -330,9 +297,8 @@ const addon = {
             if (type === 'tv') {
                 return { 
                     streams: [
-                        { url: `${b}/${config.user}/${config.pass}/${sId}`, title: `📺 Directo (TS Original)`, behaviorHints: { notWebReady: true } },
-                        { url: `${b}/live/${config.user}/${config.pass}/${sId}.m3u8`, title: `🚀 HLS (Samsung/Android)`, behaviorHints: { notWebReady: true } },
-                        { url: `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`, title: `🛡️ Proxy (Anti-Queda)`, behaviorHints: { notWebReady: true } }
+                        { url: `${b}/${config.user}/${config.pass}/${sId}`, title: `📺 Directo`, behaviorHints: { notWebReady: true } },
+                        { url: `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`, title: `🛡️ Proxy`, behaviorHints: { notWebReady: true } }
                     ] 
                 };
             } else {
@@ -340,7 +306,7 @@ const addon = {
                 return { 
                     streams: [
                         { url, title: `🎬 Directo: ${name}`, behaviorHints: { notWebReady: true } },
-                        { url: `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`, title: `🛡️ Proxy Estável`, behaviorHints: { notWebReady: true } }
+                        { url: `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`, title: `🛡️ Proxy`, behaviorHints: { notWebReady: true } }
                     ] 
                 };
             }
@@ -350,47 +316,24 @@ const addon = {
         try {
             const auth = await addon.authenticate(config);
             if (auth) {
+                // A GRANDE CORREÇÃO: No stalker, os episódios de séries pedem-se como 'vod' no create_link!
                 const cmdType = type === "tv" ? "itv" : "vod";
                 let stalkerCmd = decodeURIComponent(sId);
-                let cleanUrl = "";
+                
+                // Pedido direto e limpo ao servidor stalker sem invenções
+                const linkUrl = `${auth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                const res = await axios.get(linkUrl, { headers: auth.authData.headers, timeout: 5000 });
+                let cmdUrl = res.data?.js?.cmd || res.data?.js;
 
-                // Séries frequentemente enviam o comando já cravado no ID
-                if (stalkerCmd.startsWith('http') || stalkerCmd.startsWith('ffmpeg') || stalkerCmd.startsWith('ffrt')) {
-                    cleanUrl = stalkerCmd.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-                } else {
-                    const linkUrl = `${auth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                    const res = await axios.get(linkUrl, { headers: auth.authData.headers, timeout: 5000 });
-                    let cmdUrl = res.data?.js?.cmd || res.data?.js;
+                if (typeof cmdUrl === 'string') {
+                    // Limpa apenas as tags do portal (ffrt, ffmpeg, etc)
+                    let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                     
-                    if (typeof cmdUrl === 'string') {
-                        cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-                    }
-                }
-
-                if (cleanUrl && cleanUrl.startsWith('http')) {
-                    // SEPARAÇÃO CRÍTICA: TV pura vs Filmes c/ Headers
-                    if (type === "tv") {
-                        // Canais revertidos ao código seguro, sem injeções que causam ecrã preto
+                    if (cleanUrl.startsWith('http')) {
                         streams.push({ 
                             url: cleanUrl, 
-                            title: `⚡ Directo TV`, 
+                            title: type === "tv" ? `⚡ Directo TV` : `🎬 Directo`, 
                             behaviorHints: { notWebReady: true } 
-                        });
-                    } else {
-                        // Filmes/Séries c/ injecção da Box MAG para evitar o erro 403 do portal
-                        streams.push({ 
-                            url: cleanUrl, 
-                            title: `🎬 Directo Filme/Série`, 
-                            behaviorHints: { 
-                                notWebReady: true,
-                                proxyHeaders: {
-                                    request: {
-                                        "User-Agent": auth.authData.headers["User-Agent"],
-                                        "Cookie": auth.authData.headers["Cookie"] || "",
-                                        "Connection": "keep-alive"
-                                    }
-                                }
-                            } 
                         });
                     }
                 }
@@ -400,7 +343,7 @@ const addon = {
         const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
         streams.push({ 
             url: pUrl, 
-            title: `🛡️ Proxy (Estável)`, 
+            title: `🛡️ Proxy`, 
             behaviorHints: { notWebReady: true } 
         });
 
