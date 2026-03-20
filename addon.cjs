@@ -10,6 +10,7 @@ function setCache(key, data, ttlMinutes = 30) {
     memCache[key] = { data, expire: Date.now() + (ttlMinutes * 60 * 1000) };
 }
 
+// 1. AFINAÇÃO PROFISSIONAL STB-EMU (Réplica exata MySTB / STBEmu Pro)
 const getStalkerAuth = function(config, token) {
     var mac = (config.mac || "").toUpperCase();
     var seed = mac.replace(/:/g, "");
@@ -24,8 +25,13 @@ const getStalkerAuth = function(config, token) {
         headers: {
             "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 27211 Safari/533.3",
             "X-User-Agent": "Model: MAG322; SW: 2.20.0-r19-322; Device ID: " + id1 + "; Device ID2: " + id2 + "; Signature: " + sig + ";",
-            "X-Stb-Source": "stb-emu", "Cookie": cookie, "Accept": "*/*",
-            "Referer": config.url.replace(/\/$/, "") + "/c/", "Connection": "keep-alive"
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Charset": "utf-8, iso-8859-1, utf-16, *;q=0.7",
+            "X-Stb-Source": "stb-emu", 
+            "Cookie": cookie, 
+            "Referer": config.url.replace(/\/$/, "") + "/c/", 
+            "Connection": "keep-alive"
         }
     };
 };
@@ -84,7 +90,7 @@ const addon = {
         }));
 
         const addonName = lists.map(l => l.name).filter(Boolean).join(" + ") || "XuloV Hub";
-        const m = { id: "org.xulov.stalker", version: "5.1.16", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
+        const m = { id: "org.xulov.stalker", version: "5.1.17", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
         setCache(cacheKey, m, 60); return m;
     },
 
@@ -190,7 +196,6 @@ const addon = {
         else if (type === 'series') {
             try {
                 if (config?.type === 'xtream') {
-                    // Mantido intocável
                     const b = config.url.trim().replace(/\/$/, "");
                     const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
                     const res = await axios.get(`${api}&action=get_series_info&series_id=${sId}`, { timeout: 10000 });
@@ -219,7 +224,6 @@ const addon = {
                         meta.videos = videos.sort((a, b) => a.season - b.season || a.episode - b.episode);
                     }
                 } else {
-                    // ORGANIZAÇÃO STALKER - LÓGICA SIMPLIFICADA
                     const auth = await addon.authenticate(config);
                     if (auth) {
                         const url = `${auth.api}type=series&action=get_ordered_list&movie_id=${sId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
@@ -236,7 +240,6 @@ const addon = {
                         let flatEpCount = 1;
 
                         for (const item of itemsArray) {
-                            // Se for pasta de temporada
                             if (item.is_dir == 1 || item.type === 'season') {
                                 let sMatch = item.name ? item.name.match(/(\d+)/) : null;
                                 let seasonNum = sMatch ? parseInt(sMatch[1]) : 1;
@@ -265,7 +268,6 @@ const addon = {
                                     });
                                 } catch (e) {}
                             } else {
-                                // Se for episódio solto sem pasta
                                 const playId = item.cmd || item.id;
                                 if (playId) {
                                     allVideos.push({
@@ -286,7 +288,6 @@ const addon = {
         return { meta };
     },
 
-    // RESOLVIDO: REVERTIDO À VERSÃO ORIGINAL ESTÁVEL + CORREÇÃO TYPE VOD NAS SÉRIES
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":"); const lIdx = parseInt(parts[1]); const sId = parts[2];
         const name = decodeURIComponent(parts[3] || "Stream");
@@ -316,24 +317,40 @@ const addon = {
         try {
             const auth = await addon.authenticate(config);
             if (auth) {
-                // A GRANDE CORREÇÃO: No stalker, os episódios de séries pedem-se como 'vod' no create_link!
                 const cmdType = type === "tv" ? "itv" : "vod";
                 let stalkerCmd = decodeURIComponent(sId);
                 
-                // Pedido direto e limpo ao servidor stalker sem invenções
                 const linkUrl = `${auth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                 const res = await axios.get(linkUrl, { headers: auth.authData.headers, timeout: 5000 });
                 let cmdUrl = res.data?.js?.cmd || res.data?.js;
 
                 if (typeof cmdUrl === 'string') {
-                    // Limpa apenas as tags do portal (ffrt, ffmpeg, etc)
                     let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                     
                     if (cleanUrl.startsWith('http')) {
+                        // OPÇÃO 1: Link Directo Padrão (Sem forçar injeções - para os canais que já te dão bem)
                         streams.push({ 
                             url: cleanUrl, 
-                            title: type === "tv" ? `⚡ Directo TV` : `🎬 Directo`, 
+                            title: type === "tv" ? `⚡ Directo TV` : `🎬 Padrão`, 
                             behaviorHints: { notWebReady: true } 
+                        });
+
+                        // 2. OPÇÃO PROFISSIONAL: STB Emulator Bypass (Força o Stremio a fingir ser a Box MAG / MySTB)
+                        streams.push({ 
+                            url: cleanUrl, 
+                            title: type === "tv" ? `🛡️ Emulador STB` : `🛡️ Emulador STB`, 
+                            behaviorHints: { 
+                                notWebReady: true,
+                                proxyHeaders: {
+                                    request: {
+                                        "User-Agent": auth.authData.headers["User-Agent"],
+                                        "Cookie": auth.authData.headers["Cookie"] || "",
+                                        "Referer": auth.authData.headers["Referer"] || "",
+                                        "Accept": auth.authData.headers["Accept"] || "",
+                                        "Accept-Language": auth.authData.headers["Accept-Language"] || ""
+                                    }
+                                }
+                            } 
                         });
                     }
                 }
@@ -343,7 +360,7 @@ const addon = {
         const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
         streams.push({ 
             url: pUrl, 
-            title: `🛡️ Proxy`, 
+            title: `🔄 Proxy Externo`, 
             behaviorHints: { notWebReady: true } 
         });
 
