@@ -341,9 +341,10 @@ const addon = {
                         // Evitamos os proxyHeaders (que corrompiam o vídeo) e enviamos a identidade colada ao link.
                         const exoUrl = `${cleanUrl}|User-Agent=Mozilla/5.0 (QtEmbedded; U; Linux; C) MAG200 stbapp`;
 
-                        streams.push({ 
-                            url: exoUrl, 
-                            title: `⚡ Stalker Directo (ExoPlayer)`, 
+const tituloDirecto = type === "tv" ? "⚡ Directo TV" : "🎬 Directo Filme/Série";
+streams.push({ 
+    url: cleanUrl, 
+    title: tituloDirecto, 
                             behaviorHints: { notWebReady: true } 
                         });
                         
