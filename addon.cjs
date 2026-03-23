@@ -10,6 +10,7 @@ function setCache(key, data, ttlMinutes = 30) {
     memCache[key] = { data, expire: Date.now() + (ttlMinutes * 60 * 1000) };
 }
 
+// 1. AFINAÇÃO PROFISSIONAL STB-EMU (Réplica exata MySTB / STBEmu Pro)
 const getStalkerAuth = function(config, token) {
     var mac = (config.mac || "").toUpperCase();
     var seed = mac.replace(/:/g, "");
@@ -24,8 +25,13 @@ const getStalkerAuth = function(config, token) {
         headers: {
             "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 27211 Safari/533.3",
             "X-User-Agent": "Model: MAG322; SW: 2.20.0-r19-322; Device ID: " + id1 + "; Device ID2: " + id2 + "; Signature: " + sig + ";",
-            "X-Stb-Source": "stb-emu", "Cookie": cookie, "Accept": "*/*",
-            "Referer": config.url.replace(/\/$/, "") + "/c/", "Connection": "keep-alive"
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Charset": "utf-8, iso-8859-1, utf-16, *;q=0.7",
+            "X-Stb-Source": "stb-emu", 
+            "Cookie": cookie, 
+            "Referer": config.url.replace(/\/$/, "") + "/c/", 
+            "Connection": "keep-alive"
         }
     };
 };
@@ -84,7 +90,7 @@ const addon = {
         }));
 
         const addonName = lists.map(l => l.name).filter(Boolean).join(" + ") || "XuloV Hub";
-        const m = { id: "org.xulov.stalker", version: "5.1.13", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
+        const m = { id: "org.xulov.stalker", version: "5.1.17", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
         setCache(cacheKey, m, 60); return m;
     },
 
@@ -123,7 +129,7 @@ const addon = {
                 let cachedMetas = getCache(cacheKey);
 
                 if (!cachedMetas) {
-                    const auth = await this.authenticate(config);
+                    const auth = await addon.authenticate(config);
                     if (auth) {
                         const sType = type === "tv" ? "itv" : (type === "movie" ? "vod" : "series");
                         const sAct = type === "tv" ? "get_all_channels" : "get_ordered_list";
@@ -140,7 +146,7 @@ const addon = {
                         const res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
                         const raw = res.data?.js?.data || res.data?.js || [];
                         cachedMetas = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => ({
-                            id: `xlv:${lIdx}:${m.id || encodeURIComponent(m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
+                            id: `xlv:${lIdx}:${encodeURIComponent(m.cmd || m.id)}:${encodeURIComponent(m.name || m.title)}`,
                             name: m.name || m.title, type: type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
                         }));
                         setCache(cacheKey, cachedMetas, 10);
@@ -171,11 +177,9 @@ const addon = {
                         meta.description = res.data.info.plot || res.data.info.description || "";
                         meta.poster = res.data.info.cover || "";
                         meta.background = (res.data.info.backdrop_path && res.data.info.backdrop_path.length > 0) ? res.data.info.backdrop_path[0] : meta.poster;
-                        if (res.data.info.director) meta.director = [res.data.info.director];
-                        if (res.data.info.cast) meta.cast = res.data.info.cast.split(',').map(c => c.trim());
                     }
                 } else {
-                    const auth = await this.authenticate(config);
+                    const auth = await addon.authenticate(config);
                     if (auth) {
                         const url = `${auth.api}type=vod&action=get_info&movie_id=${sId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                         const res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
@@ -184,8 +188,6 @@ const addon = {
                             meta.description = info.description || info.plot || "";
                             meta.poster = info.screenshot_uri || info.logo || info.cover || "";
                             meta.background = info.screenshot_uri || meta.poster;
-                            if (info.director) meta.director = [info.director];
-                            if (info.actors) meta.cast = info.actors.split(',').map(c => c.trim());
                         }
                     }
                 }
@@ -201,11 +203,7 @@ const addon = {
                     if (res.data?.info) {
                         meta.description = res.data.info.plot || res.data.info.description || "";
                         meta.poster = res.data.info.cover || "";
-                        if (res.data.info.backdrop_path && res.data.info.backdrop_path.length > 0) {
-                            meta.background = res.data.info.backdrop_path[0];
-                        } else {
-                            meta.background = meta.poster;
-                        }
+                        meta.background = (res.data.info.backdrop_path && res.data.info.backdrop_path.length > 0) ? res.data.info.backdrop_path[0] : meta.poster;
                     }
 
                     if (res.data?.episodes) {
@@ -226,60 +224,60 @@ const addon = {
                         meta.videos = videos.sort((a, b) => a.season - b.season || a.episode - b.episode);
                     }
                 } else {
-                    const auth = await this.authenticate(config);
+                    const auth = await addon.authenticate(config);
                     if (auth) {
                         const url = `${auth.api}type=series&action=get_ordered_list&movie_id=${sId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                         const res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
                         const items = res.data?.js?.data || res.data?.js || [];
                         const itemsArray = Array.isArray(items) ? items : Object.values(items);
 
-                        let firstItem = itemsArray[0];
-                        if (firstItem) {
-                            meta.description = firstItem.description || firstItem.plot || "";
-                            meta.poster = firstItem.logo || firstItem.screenshot_uri || firstItem.cover || "";
-                            meta.background = firstItem.screenshot_uri || firstItem.logo || firstItem.cover || meta.poster;
+                        if (itemsArray.length > 0) {
+                            meta.poster = itemsArray[0].logo || itemsArray[0].screenshot_uri || itemsArray[0].cover || "";
+                            meta.description = itemsArray[0].description || "";
                         }
 
                         let allVideos = [];
                         let flatEpCount = 1;
+
                         for (const item of itemsArray) {
-                            if (item.model === 'series' || item.is_dir == 1) {
-                                const sUrl = `${auth.api}type=series&action=get_ordered_list&movie_id=${item.id}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                                const sRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 5000 });
-                                const eps = sRes.data?.js?.data || sRes.data?.js || [];
+                            if (item.is_dir == 1 || item.type === 'season') {
+                                let sMatch = item.name ? item.name.match(/(\d+)/) : null;
+                                let seasonNum = sMatch ? parseInt(sMatch[1]) : 1;
 
-                                let sMatch = item.name ? item.name.match(/(?:season|temporada|t)\s*(\d+)/i) : null;
-                                const sNum = item.season ? parseInt(item.season) : (sMatch ? parseInt(sMatch[1]) : 1);
+                                try {
+                                    const sUrl = `${auth.api}type=series&action=get_ordered_list&movie_id=${item.id}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                                    const sRes = await axios.get(sUrl, { headers: auth.authData.headers, timeout: 5000 });
+                                    const eps = sRes.data?.js?.data || sRes.data?.js || [];
+                                    const epsArray = Array.isArray(eps) ? eps : Object.values(eps);
 
-                                (Array.isArray(eps) ? eps : Object.values(eps)).forEach((ep, idx) => {
-                                    let eMatch = ep.name ? ep.name.match(/(?:episode|episódio|ep|e)\s*(\d+)/i) : null;
-                                    let eNum = ep.episode ? parseInt(ep.episode) : (eMatch ? parseInt(eMatch[1]) : (idx + 1));
-
-                                    allVideos.push({
-                                        id: `xlv:${lIdx}:${ep.id || encodeURIComponent(ep.cmd)}:${encodeURIComponent(ep.name)}`,
-                                        title: ep.name || `Episódio ${eNum}`,
-                                        season: sNum,
-                                        episode: eNum,
-                                        thumbnail: ep.screenshot_uri || ep.logo || meta.poster,
-                                        overview: ep.description || ""
+                                    epsArray.forEach((ep, idx) => {
+                                        let epName = ep.name || `Episódio ${idx + 1}`;
+                                        let eMatch = epName.match(/(?:ep|e|episódio)[\s\-\.]*(\d+)/i) || epName.match(/(\d+)/);
+                                        let epNum = ep.episode ? parseInt(ep.episode) : (eMatch ? parseInt(eMatch[1]) : (idx + 1));
+                                        
+                                        const playId = ep.cmd || ep.id;
+                                        if (playId) {
+                                            allVideos.push({
+                                                id: `xlv:${lIdx}:${encodeURIComponent(playId)}:${encodeURIComponent(epName)}`,
+                                                title: epName,
+                                                season: seasonNum,
+                                                episode: epNum,
+                                                thumbnail: ep.screenshot_uri || meta.poster
+                                            });
+                                        }
                                     });
-                                });
+                                } catch (e) {}
                             } else {
-                                let sMatch = item.name ? item.name.match(/(?:season|temporada|t)\s*(\d+)/i) : null;
-                                let eMatch = item.name ? item.name.match(/(?:episode|episódio|ep|e)\s*(\d+)/i) : null;
-
-                                const sNum = parseInt(item.season) || (sMatch ? parseInt(sMatch[1]) : 1);
-                                const eNum = parseInt(item.episode) || (eMatch ? parseInt(eMatch[1]) : flatEpCount);
-                                flatEpCount++;
-
-                                allVideos.push({
-                                    id: `xlv:${lIdx}:${item.id || encodeURIComponent(item.cmd)}:${encodeURIComponent(item.name)}`,
-                                    title: item.name || `Episódio ${eNum}`,
-                                    season: sNum,
-                                    episode: eNum,
-                                    thumbnail: item.screenshot_uri || item.logo || meta.poster,
-                                    overview: item.description || ""
-                                });
+                                const playId = item.cmd || item.id;
+                                if (playId) {
+                                    allVideos.push({
+                                        id: `xlv:${lIdx}:${encodeURIComponent(playId)}:${encodeURIComponent(item.name || 'Episódio ' + flatEpCount)}`,
+                                        title: item.name || `Episódio ${flatEpCount}`,
+                                        season: 1,
+                                        episode: flatEpCount++,
+                                        thumbnail: item.screenshot_uri || meta.poster
+                                    });
+                                }
                             }
                         }
                         meta.videos = allVideos;
@@ -290,7 +288,6 @@ const addon = {
         return { meta };
     },
 
-    // A ÚNICA ALTERAÇÃO NESTE CÓDIGO: Resolução Limpa do Ecrã Preto (Correção Localhost + Pipe Inject)
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":"); const lIdx = parseInt(parts[1]); const sId = parts[2];
         const name = decodeURIComponent(parts[3] || "Stream");
@@ -301,17 +298,16 @@ const addon = {
             if (type === 'tv') {
                 return { 
                     streams: [
-                        { url: `${b}/${config.user}/${config.pass}/${sId}`, title: `📺 Directo (TS)`, behaviorHints: { notWebReady: true } },
-                        { url: `${b}/live/${config.user}/${config.pass}/${sId}.m3u8`, title: `🚀 HLS (Samsung/Android)`, behaviorHints: { notWebReady: true } },
-                        { url: `http://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`, title: `🛡️ Proxy (Anti-Queda)`, behaviorHints: { notWebReady: true } }
+                        { url: `${b}/${config.user}/${config.pass}/${sId}`, title: `📺 Directo`, behaviorHints: { notWebReady: true } },
+                        { url: `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`, title: `🛡️ Proxy`, behaviorHints: { notWebReady: true } }
                     ] 
                 };
             } else {
                 let url = sId.includes('.') ? `${b}/${type === 'series' ? 'series' : 'movie'}/${config.user}/${config.pass}/${sId}` : `${b}/movie/${config.user}/${config.pass}/${sId}.mp4`;
                 return { 
                     streams: [
-                        { url, title: `🚀 Directo: ${name}`, behaviorHints: { notWebReady: true } },
-                        { url: `http://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`, title: `🛡️ Proxy Estável`, behaviorHints: { notWebReady: true } }
+                        { url, title: `🎬 Directo: ${name}`, behaviorHints: { notWebReady: true } },
+                        { url: `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`, title: `🛡️ Proxy`, behaviorHints: { notWebReady: true } }
                     ] 
                 };
             }
@@ -322,44 +318,49 @@ const addon = {
             const auth = await addon.authenticate(config);
             if (auth) {
                 const cmdType = type === "tv" ? "itv" : "vod";
-                const res = await axios.get(`${auth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(sId)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, { headers: auth.authData.headers, timeout: 5000 });
+                let stalkerCmd = decodeURIComponent(sId);
+                
+                const linkUrl = `${auth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                const res = await axios.get(linkUrl, { headers: auth.authData.headers, timeout: 5000 });
                 let cmdUrl = res.data?.js?.cmd || res.data?.js;
 
                 if (typeof cmdUrl === 'string') {
-                    let cleanUrl = cmdUrl.split(' ').pop();
-
+                    let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+                    
                     if (cleanUrl.startsWith('http')) {
-                        // FIX 1: RESOLUÇÃO DO ECRÃ PRETO (O Bug do Localhost)
-                        // Muitos portais mandam a stream mascarada como localhost e o Stremio falha.
-                        const portalMatch = config.url.match(/^(https?:\/\/[^\/]+)/i);
-                        const portalBase = portalMatch ? portalMatch[1] : '';
-                        if (portalBase && (cleanUrl.includes('localhost') || cleanUrl.includes('127.0.0.1'))) {
-                            cleanUrl = cleanUrl.replace(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i, portalBase);
-                        }
-
-                        // FIX 2: INJEÇÃO SEGURA ("Pipe Syntax" suportada pelo ExoPlayer/Samsung)
-                        // Evitamos os proxyHeaders (que corrompiam o vídeo) e enviamos a identidade colada ao link.
-                        const exoUrl = `${cleanUrl}|User-Agent=Mozilla/5.0 (QtEmbedded; U; Linux; C) MAG200 stbapp`;
-
+                        // OPÇÃO 1: Link Directo Padrão (Sem forçar injeções - para os canais que já te dão bem)
                         streams.push({ 
-                            url: exoUrl, 
-                            title: `⚡ Stalker Directo (ExoPlayer)`, 
+                            url: cleanUrl, 
+                            title: type === "tv" ? `⚡ Directo TV` : `🎬 Padrão`, 
                             behaviorHints: { notWebReady: true } 
                         });
 
+                        // 2. OPÇÃO PROFISSIONAL: STB Emulator Bypass (Força o Stremio a fingir ser a Box MAG / MySTB)
                         streams.push({ 
                             url: cleanUrl, 
-                            title: `📺 Stalker Puro (Básico)`, 
-                            behaviorHints: { notWebReady: true } 
+                            title: type === "tv" ? `🛡️ Emulador STB` : `🛡️ Emulador STB`, 
+                            behaviorHints: { 
+                                notWebReady: true,
+                                proxyHeaders: {
+                                    request: {
+                                        "User-Agent": auth.authData.headers["User-Agent"],
+                                        "Cookie": auth.authData.headers["Cookie"] || "",
+                                        "Referer": auth.authData.headers["Referer"] || "",
+                                        "Accept": auth.authData.headers["Accept"] || "",
+                                        "Accept-Language": auth.authData.headers["Accept-Language"] || ""
+                                    }
+                                }
+                            } 
                         });
                     }
                 }
             }
         } catch(e) {}
 
+        const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
         streams.push({ 
-            url: `http://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`, 
-            title: `🛡️ Stalker Estável (Proxy)`, 
+            url: pUrl, 
+            title: `🔄 Proxy Externo`, 
             behaviorHints: { notWebReady: true } 
         });
 
@@ -368,3 +369,4 @@ const addon = {
 };
 
 module.exports = addon;
+
