@@ -285,4 +285,3 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 });
 
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Addon Multi-Hub Online na porta ${PORT}`));
-
