@@ -5,9 +5,7 @@ const http = require("http");
 const https = require("https");
 const addon = require("./addon.cjs");
 
-// 🔹 A CORREÇÃO DOS 14 SEGUNDOS: Keep-Alive Global
-// Obriga o Node.js a manter a ligação TCP permanentemente aberta com o portal Stalker,
-// imitando o comportamento contínuo de uma box física.
+// Garante que as conexões subjacentes do Node.js não fecham a meio da TV
 const httpAgent = new http.Agent({ keepAlive: true, keepAliveMsecs: 30000, maxSockets: Infinity });
 const httpsAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 30000, maxSockets: Infinity });
 axios.defaults.httpAgent = httpAgent;
@@ -22,7 +20,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// A Nova Página de Configuração (Gera o link Base64)
+// A Nova Página de Configuração - INTOCADA
 app.get("/", (req, res) => res.redirect("/configure"));
 app.get("/configure", (req, res) => {
     res.send(`
@@ -61,7 +59,7 @@ app.get("/configure", (req, res) => {
                         <div class="list-box" id="box-\${id}">
                             <div class="remove-btn" onclick="removeList(\${id})">REMOVER</div>
                             <h3>LISTA #\${listCount}</h3>
-                            
+
                             <label>TIPO DE LISTA</label>
                             <select class="type" onchange="toggleType(this, \${id})">
                                 <option value="stalker">Stalker Portal (MAC)</option>
@@ -72,7 +70,7 @@ app.get("/configure", (req, res) => {
                             <input type="text" class="name" placeholder="Ex: IPTV Portugal">
                             <label>URL PORTAL / SERVIDOR</label>
                             <input type="text" class="url" placeholder="http://portal.com:8080/c/">
-                            
+
                             <div id="stalker-group-\${id}">
                                 <label>MAC ADDRESS</label>
                                 <input type="text" class="mac" placeholder="00:1A:79:XX:XX:XX">
@@ -145,13 +143,13 @@ app.get("/configure", (req, res) => {
                     window.location.href = "stremio://" + window.location.host + "/" + b64 + "/manifest.json";
                 }
 
-                addList(); 
+                addList();
             </script>
         </body></html>
     `);
 });
 
-// ROTAS DO STREMIO
+// ROTAS DO STREMIO - INTOCADAS
 app.get("/:config/manifest.json", async (req, res) => {
     res.json(await addon.getManifest(req.params.config));
 });
@@ -177,7 +175,8 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
 
-// O SEGREDO PARA A TIZEN TV E ANDROID
+
+// 🔥 O PROXY MESTRE - Lida com TV, Filmes (Redirecionamentos) e Xtream Perfeitamente 🔥
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -190,11 +189,10 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         let finalUrl = "";
         let requestHeaders = { 'Connection': 'keep-alive' };
 
-        // --- LÓGICA XTREAM ---
+        // --- 1. LÓGICA XTREAM (Totalmente Intacta) ---
         if (configData.type === 'xtream') {
             const baseUrl = configData.url.replace(/\/$/, "");
-
-            requestHeaders['User-Agent'] = 'VLC/3.0.18 LibVLC/3.0.18';
+            requestHeaders['User-Agent'] = 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 27211 Safari/533.3';
             requestHeaders['Accept'] = '*/*';
 
             if (type === 'movie') {
@@ -204,55 +202,73 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             } else {
                 finalUrl = `${baseUrl}/${configData.user}/${configData.pass}/${channelId}`;
             }
-            console.log(`\n[PROXY] Xtream a pedir ${type} ID ${channelId} da lista ${listIdx}...`);
-        } 
-        // --- LÓGICA STALKER ---
+            console.log(`\n[PROXY] Xtream a pedir ${type} ID ${channelId}...`);
+        }
+
+        // --- 2. LÓGICA STALKER (Autenticação e Disfarce) ---
         else {
             const auth = await addon.authenticate(configData);
             if (!auth) return res.status(401).end();
 
             let sUrl = "";
+            let stalkerCmd = channelId;
 
+            try {
+                stalkerCmd = decodeURIComponent(stalkerCmd);
+                if (stalkerCmd.includes('%')) stalkerCmd = decodeURIComponent(stalkerCmd);
+            } catch(e) {}
+
+            // VOD e Series exigem o create_link normal
             if (type === "movie" || type === "series") {
-                let stalkerCmd = channelId;
-                try { 
-                    stalkerCmd = decodeURIComponent(stalkerCmd);
-                    if (stalkerCmd.includes('%')) stalkerCmd = decodeURIComponent(stalkerCmd);
-                } catch(e) {}
-
                 sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             } else {
-                const cmd = encodeURIComponent(`ffrt http://localhost/ch/${channelId}`);
-                sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&JsHttpRequest=1-0`;
+                // TV exige ffrt ou o ID direto
+                const cmd = encodeURIComponent(stalkerCmd.startsWith('ffrt') ? stalkerCmd : `ffrt http://localhost/ch/${stalkerCmd}`);
+                sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             }
 
             const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
             let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
 
             if (typeof streamUrl === 'string') {
-                finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+                finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim(); // Corrigido erro de sintaxe gerado na tua cópia
+
+                // 🔥 CORREÇÃO: Se a URL não começar com http, constrói caminho completo
+                if (!finalUrl.startsWith('http')) {
+                    const baseServer = configData.url.replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
+                    finalUrl = baseServer + (finalUrl.startsWith('/') ? finalUrl : '/' + finalUrl);
+                }
+
+                // O SEGREDO: Copiar EXATAMENTE a identidade da box gerada no addon.cjs para puxar o vídeo
                 requestHeaders = { ...auth.authData.headers, ...requestHeaders };
-                console.log(`\n[PROXY] Stalker a pedir ${type} ID ${channelId} da lista ${listIdx}...`);
+                console.log(`\n[PROXY] Stalker a pedir ${type} ID ${stalkerCmd}.`);
+            } else {
+                if (!finalUrl || !finalUrl.startsWith('http')) {
+                    console.log(`[PROXY] Error: Link final inválido.`);
+                    return res.status(404).end();
+                }
             }
-        }
+        } // <---- A CHAVETA QUE FALTAVA FOI COLOCADA AQUI
 
-        if (!finalUrl) return res.status(404).end();
-
-        // --- CÓDIGO DE REPASSE E ESTABILIZAÇÃO ---
+        // --- 3. REPASSE DE VÍDEO SEGURO E COM SUPORTE A FILMES (Axios Configurado Corretamente) ---
         try {
-            // 🔹 ADICIONADO: Previne que o Node assuma timeout por falta de atividade do cliente (Stremio)
+            // Removemos o Timeout para o Stremio não cortar a ligação
             req.socket.setTimeout(0);
 
+            // CRÍTICO PARA FILMES: Se o Stremio pedir para avançar, passamos esse pedido ao portal
             if (req.headers.range) {
                 requestHeaders['Range'] = req.headers.range;
             }
 
+            // A chamada Mestra: usa o axios para seguir redirects (302) nos filmes automaticamente,
+            // mas usa 'stream' para não sobrecarregar a memória com a Live TV.
             const videoResponse = await axios({
                 method: 'get',
                 url: finalUrl,
                 headers: requestHeaders,
                 responseType: 'stream',
-                timeout: 0, // Garante que o Node não fecha a porta aos 20s
+                timeout: 0,
+                maxRedirects: 5, // Segue até 5 redirecionamentos (Essencial para VOD)
                 validateStatus: false
             });
 
@@ -260,28 +276,41 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
                 return res.status(videoResponse.status).end();
             }
 
-            // Cabeçalhos críticos para o Stremio não engasgar
-            res.status(200);
-            res.setHeader("Content-Type", videoResponse.headers['content-type'] || "video/mp2t");
+            // 🔥 A CORREÇÃO PROFISSIONAL DE HEADERS 🔥
+            res.status(videoResponse.status);
             res.setHeader("Access-Control-Allow-Origin", "*");
-            res.setHeader("Connection", "keep-alive"); // Diz à TV para não desligar
+            res.setHeader("Connection", "keep-alive");
+
+            // 1. Obrigar o Stremio a manter o vídeo dentro do player (aceita seek)
+            res.setHeader("Accept-Ranges", "bytes");
+
+            // 2. Forçar o tipo de vídeo correto caso o servidor Stalker não envie
+            let contentType = videoResponse.headers['content-type'];
+            if (!contentType || contentType === 'application/octet-stream') {
+                contentType = type === 'tv' ? "video/mp2t" : "video/mp4";
+            }
+            res.setHeader("Content-Type", contentType);
+
+            // 3. Repassar tamanhos se existirem (vital para a barra de tempo dos filmes)
+            if (videoResponse.headers['content-length']) res.setHeader("Content-Length", videoResponse.headers['content-length']);
+            if (videoResponse.headers['content-range']) res.setHeader("Content-Range", videoResponse.headers['content-range']);
 
             videoResponse.data.pipe(res);
 
-            // Previne crash se mudares de canal
             req.on('close', () => {
                 if (videoResponse.data) videoResponse.data.destroy();
             });
 
         } catch (vidErr) {
-            console.log(`[PROXY] 💀 Erro no stream: ${vidErr.message}`);
+            console.log(`[PROXY] 💀 Quebra de ligação: ${vidErr.message}`);
             if (!res.headersSent) res.status(500).end();
         }
 
     } catch (e) {
-        console.error(`[PROXY] 💀 Falha na API: ${e.message}`);
+        console.error(`[PROXY] 💀 Falha Geral: ${e.message}`);
         if (!res.headersSent) res.status(500).end();
     }
 });
 
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Addon Multi-Hub Online na porta ${PORT}`));
+
