@@ -157,33 +157,68 @@ const addon = {
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":"); const lIdx = parseInt(parts[1]); const sId = parts[2];
         const lists = this.parseConfig(configBase64); const config = lists[lIdx];
-        const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
         
-        // CORREÇÃO: Para Filmes/Séries, o Proxy é SEMPRE a primeira e principal opção para o player não saltar
-        if (type === 'movie' || type === 'series') {
-            return { streams: [{ url: pUrl, title: `🎬 Reproduzir (Proxy Estável)`, behaviorHints: { notWebReady: true } }] };
-        }
+        // A URL do nosso Proxy
+        const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
 
+        // Se for Xtream, devolve as duas opções rapidamente
         if (config?.type === 'xtream') {
             const b = config.url.trim().replace(/\/$/, "");
-            return { streams: [{ url: `${b}/${config.user}/${config.pass}/${sId}`, title: `📺 Directo`, behaviorHints: { notWebReady: true } }, { url: pUrl, title: `🛡️ Proxy`, behaviorHints: { notWebReady: true } }] };
+            let directUrl = "";
+            if (type === 'tv') directUrl = `${b}/${config.user}/${config.pass}/${sId}`;
+            else directUrl = sId.includes('.') ? `${b}/${type === 'series' ? 'series' : 'movie'}/${config.user}/${config.pass}/${sId}` : `${b}/movie/${config.user}/${config.pass}/${sId}.mp4`;
+            
+            return {
+                streams: [
+                    { url: directUrl, title: `⚡ Directo (Rápido)`, behaviorHints: { notWebReady: true } },
+                    { url: pUrl, title: `🛡️ Proxy Estável`, behaviorHints: { notWebReady: true } }
+                ]
+            };
         }
 
         let streams = [];
         try {
+            // Lógica Stalker: Vamos tentar ir buscar o link Direto real
             const auth = await addon.authenticate(config);
             if (auth) {
-                const cmdType = "itv";
-                const linkUrl = `${auth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(decodeURIComponent(sId))}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                const cmdType = type === "tv" ? "itv" : "vod";
+                let stalkerCmd = decodeURIComponent(sId);
+
+                const linkUrl = `${auth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                 const res = await axios.get(linkUrl, { headers: auth.authData.headers, timeout: 5000 });
                 let cmdUrl = res.data?.js?.cmd || res.data?.js;
+
                 if (typeof cmdUrl === 'string') {
                     let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-                    if (cleanUrl.startsWith('http')) streams.push({ url: cleanUrl, title: `⚡ Directo TV`, behaviorHints: { notWebReady: true } });
+                    
+                    if (!cleanUrl.startsWith('http')) {
+                        const baseServer = config.url.replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
+                        cleanUrl = baseServer + (cleanUrl.startsWith('/') ? cleanUrl : '/' + cleanUrl);
+                    }
+
+                    if (cleanUrl.startsWith('http')) {
+                        // Adicionamos a opção DIRECTA que não passa pelo Render (Ideal para filmes pesados)
+                        streams.push({ 
+                            url: cleanUrl, 
+                            title: `⚡ Directo ${type === 'tv' ? 'TV' : 'VOD'}`, 
+                            behaviorHints: { 
+                                notWebReady: true,
+                                // Injetamos o User-Agent nativo para o Stremio imitar a box
+                                proxyHeaders: { request: { "User-Agent": auth.authData.headers["User-Agent"] } }
+                            } 
+                        });
+                    }
                 }
             }
         } catch(e) {}
-        streams.push({ url: pUrl, title: `🔄 Proxy Estável`, behaviorHints: { notWebReady: true } });
+
+        // Adicionamos SEMPRE o Proxy como segunda opção (Para os que saltam fora)
+        streams.push({ 
+            url: pUrl, 
+            title: `🛡️ Proxy (Evita Saltos)`, 
+            behaviorHints: { notWebReady: true } 
+        });
+
         return { streams };
     }
 };
