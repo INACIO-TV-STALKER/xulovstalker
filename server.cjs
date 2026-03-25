@@ -215,7 +215,17 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
 
             if (typeof streamUrl === 'string') {
-                finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+                let cleanUrl = streamUrl.trim();
+
+                // 🔥 A LIMPEZA VITAL PARA A TV FUNCIONAR 🔥
+                if (cleanUrl.includes('http://localhost/ch/')) {
+                    const parts = cleanUrl.split('http://localhost/ch/');
+                    const basePart = parts[0].replace(/ffmpeg\s*$/, "").trim();
+                    const channelPart = parts[1].trim();
+                    finalUrl = basePart + (basePart.endsWith('/') ? '' : '/') + channelPart;
+                } else {
+                    finalUrl = cleanUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+                }
 
                 if (!finalUrl.startsWith('http')) {
                     const baseServer = configData.url.replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
@@ -229,15 +239,13 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         }
 
         // 🔥 1. A VIA RÁPIDA (FILMES E PLAYLISTS) 🔥
-        // Se for Filme/Série, usamos Redirect para não gastar dados do Render (Já confirmaste que funciona).
         if (type !== 'tv' || finalUrl.includes('.m3u8') || finalUrl.includes('.m3u')) {
-            console.log(`[REDIRECT VOD/M3U8] A enviar direto para: ${finalUrl}`);
+            console.log(`[REDIRECT VOD] A enviar direto para: ${finalUrl}`);
             return res.redirect(302, finalUrl);
         }
 
         // 🔥 2. A VIA BLINDADA (CANAIS DE TV) 🔥
-        // A TV precisa dos headers (User-Agent e Cookie MAC) escondidos do Render para não ir abaixo.
-        console.log(`[PROXY TV] A proteger transmissão de TV: ${channelId}`);
+        console.log(`[PROXY TV] A proteger transmissão de TV para: ${finalUrl}`);
         req.socket.setTimeout(0);
         if (req.headers.range) requestHeaders['Range'] = req.headers.range;
 
@@ -252,6 +260,7 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         });
 
         if (videoResponse.status >= 400) {
+            console.log(`[ERRO IPTV] O servidor recusou o canal com status: ${videoResponse.status}`);
             return res.status(videoResponse.status).end();
         }
 
