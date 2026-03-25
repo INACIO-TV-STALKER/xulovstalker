@@ -40,17 +40,34 @@ const addon = {
 
     async authenticate(config) {
         if (config.type === 'xtream') return true;
+
+        // 🔥 A GRANDE MELHORIA: CACHE DE AUTENTICAÇÃO 🔥
+        // Cria uma chave única para esta lista. Se já fizemos login na última hora, usamos o passe salvo!
+        const cacheKey = `auth_${config.url}_${config.mac || 'nomac'}`;
+        const cachedAuth = getCache(cacheKey);
+        if (cachedAuth) return cachedAuth;
+
         var authData = getStalkerAuth(config, null);
         var baseUrl = config.url.trim().replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
         if (!baseUrl.endsWith('/')) baseUrl += '/';
         var url = baseUrl + "portal.php";
+        
         try {
             var hUrl = url + "?type=stb&action=handshake&sn=" + authData.sn + "&device_id=" + authData.id1 + "&JsHttpRequest=1-0";
             var res = await axios.get(hUrl, { headers: authData.headers, timeout: 5000 });
             var token = res.data?.js?.token || res.data?.token || null;
-            if (token) return { token: token, api: url + "?", authData: getStalkerAuth(config, token) };
+            
+            if (token) {
+                const finalAuth = { token: token, api: url + "?", authData: getStalkerAuth(config, token) };
+                // Guarda a autenticação na memória durante 60 minutos
+                setCache(cacheKey, finalAuth, 60);
+                return finalAuth;
+            }
             return null;
-        } catch (e) { return null; }
+        } catch (e) { 
+            console.error("[AUTH ERROR] Falha no login Stalker:", e.message);
+            return null; 
+        }
     },
 
     async getManifest(configBase64) {
@@ -79,7 +96,7 @@ const addon = {
                         tvG = tvG.concat(g1); movG = movG.concat(g2); serG = serG.concat(g3);
                     }
                 }
-            } catch(e) {}
+            } catch(e) { console.error(`[MANIFEST ERROR] Falha ao carregar lista ${i}:`, e.message); }
             catalogs.push({ type: "tv", id: `cat_${i}`, name: l.name || `Lista ${i+1}`, extra: [{ name: "genre", options: tvG.filter(Boolean) }, { name: "skip" }] });
             catalogs.push({ type: "movie", id: `mov_${i}`, name: `${l.name || `Lista ${i+1}`} 🎬`, extra: [{ name: "genre", options: movG.filter(Boolean) }, { name: "skip" }] });
             catalogs.push({ type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿`, extra: [{ name: "genre", options: serG.filter(Boolean) }, { name: "skip" }] });
@@ -124,7 +141,7 @@ const addon = {
                         if (cat) catP = sType === "itv" ? `&genre=${cat.id}` : `&category=${cat.id}`;
                     }
 
-                    // CORREÇÃO: Lógica para filtrar as categorias e manter listas rápidas
+                    // A LÓGICA RÁPIDA DE TV MANTÉM-SE INTACTA
                     let sAct = "get_all_channels"; 
                     if (type === "tv") {
                         sAct = catP ? "get_ordered_list" : "get_all_channels";
@@ -142,7 +159,7 @@ const addon = {
                     }));
                 }
             }
-        } catch (e) {}
+        } catch (e) { console.error("[CATALOG ERROR]", e.message); }
         return { metas };
     },
 
@@ -159,7 +176,7 @@ const addon = {
         const lists = this.parseConfig(configBase64); const config = lists[lIdx];
         const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
 
-        // CORREÇÃO: Para Filmes/Séries, o Proxy é SEMPRE a primeira e principal opção para o player não saltar
+        // A REGRA DOS FILMES INTACTA (Proteção contra saltos de player)
         if (type === 'movie' || type === 'series') {
             return { streams: [{ url: pUrl, title: `🎬 Reproduzir (Proxy Estável)`, behaviorHints: { notWebReady: true } }] };
         }
@@ -182,10 +199,12 @@ const addon = {
                     if (cleanUrl.startsWith('http')) streams.push({ url: cleanUrl, title: `⚡ Directo TV`, behaviorHints: { notWebReady: true } });
                 }
             }
-        } catch(e) {}
+        } catch(e) { console.error("[STREAM ERROR]", e.message); }
+        
         streams.push({ url: pUrl, title: `🔄 Proxy Estável`, behaviorHints: { notWebReady: true } });
         return { streams };
     }
 };
 
 module.exports = addon;
+
