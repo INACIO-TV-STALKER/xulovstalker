@@ -175,7 +175,6 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
 
-// 🔥 PROXY PROFISSIONAL - RESOLUÇÃO DE IP-LOCK E LINKS 404 🔥
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -196,8 +195,6 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             finalUrl = type === 'tv' ? `${baseUrl}/${configData.user}/${configData.pass}/${channelId}` : 
                        type === 'movie' ? `${baseUrl}/movie/${configData.user}/${configData.pass}/${channelId}` :
                        `${baseUrl}/series/${configData.user}/${configData.pass}/${channelId}`;
-            
-            return res.redirect(302, finalUrl);
         } 
         else {
             const auth = await addon.authenticate(configData);
@@ -209,16 +206,12 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             requestHeaders['Referer'] = configData.url.replace(/\/$/, "") + "/c/";
 
             let stalkerCmd = decodeURIComponent(channelId);
-            if (stalkerCmd.includes('%')) stalkerCmd = decodeURIComponent(stalkerCmd);
-
             let sUrl = "";
             
-            // 🔥 A CORREÇÃO ESTÁ AQUI: Separação estrita entre VOD e TV 🔥
+            // Separação limpa na criação do link
             if (type === "movie" || type === "series") {
-                // Filmes enviam o ID puro (Base64)
                 sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             } else {
-                // TV leva o truque do ffrt localhost
                 const cmd = encodeURIComponent(stalkerCmd.startsWith('ffrt') ? stalkerCmd : `ffrt http://localhost/ch/${stalkerCmd}`);
                 sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             }
@@ -242,11 +235,18 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         }
 
         if (!finalUrl) {
-            console.error(`[PROXY] Falha ao gerar link final para: ${channelId}`);
+            console.error(`[ERRO PROXY] Falha ao gerar link final para: ${channelId}`);
             return res.status(404).end();
         }
 
-        console.log(`[PROXY] A servir ${type}: ${finalUrl}`);
+        // 🔥 REPOSIÇÃO (Como estava ontem): Filmes/Séries vão por REDIRECT DIRETO 🔥
+        if (type === "movie" || type === "series") {
+            console.log(`[REDIRECT VOD] A enviar diretamente para o player: ${finalUrl}`);
+            return res.redirect(302, finalUrl);
+        }
+
+        // 🔥 A TV Continua pelo Proxy para não ser bloqueada 🔥
+        console.log(`[PROXY TV] A servir canal blindado: ${finalUrl}`);
         
         if (req.headers.range) requestHeaders['Range'] = req.headers.range;
 
@@ -255,13 +255,13 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             url: finalUrl,
             headers: requestHeaders,
             responseType: 'stream',
-            timeout: 15000,
+            timeout: 10000,
             maxRedirects: 5,
             validateStatus: false
         });
 
         if (videoResponse.status >= 400) {
-            console.log(`[PROXY] Erro ${videoResponse.status}, a tentar redirect...`);
+            console.log(`[PROXY TV] Erro ${videoResponse.status}, a tentar redirect de emergência...`);
             return res.redirect(302, finalUrl);
         }
 
