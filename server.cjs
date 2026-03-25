@@ -187,72 +187,64 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     try {
         let finalUrl = "";
         
-        // 🔥 IDENTIDADE PURA DE UMA BOX (STBEMU/MAG) PARA O VÍDEO 🔥
-        let requestHeaders = { 
-            'User-Agent': 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3',
-            'Accept': '*/*',
-            'Connection': 'keep-alive'
-        };
+app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
+    const { config, listIdx, channelId } = req.params;
+    const type = req.query.type || 'tv';
+    const lists = addon.parseConfig(config);
+    const configData = lists[listIdx];
+    if (!configData) return res.status(400).end();
+
+    try {
+        let finalUrl = "";
+        let requestHeaders = { 'Connection': 'keep-alive' };
 
         if (configData.type === 'xtream') {
             const baseUrl = configData.url.replace(/\/$/, "");
             requestHeaders['User-Agent'] = 'VLC/3.0.18 LibVLC/3.0.18';
-            if (type === 'movie') finalUrl = `${baseUrl}/movie/${configData.user}/${configData.pass}/${channelId}`;
-            else if (type === 'series') finalUrl = `${baseUrl}/series/${configData.user}/${configData.pass}/${channelId}`;
-            else finalUrl = `${baseUrl}/${configData.user}/${configData.pass}/${channelId}`;
+            finalUrl = type === 'tv' ? `${baseUrl}/${configData.user}/${configData.pass}/${channelId}` : 
+                       type === 'movie' ? `${baseUrl}/movie/${configData.user}/${configData.pass}/${channelId}` :
+                       `${baseUrl}/series/${configData.user}/${configData.pass}/${channelId}`;
         } 
         else {
             const auth = await addon.authenticate(configData);
             if (!auth) return res.status(401).end();
 
-            // Injetamos o User-Agent e o MAC (Cookie) reais usados no login do portal
-            if (auth.authData.headers['User-Agent']) requestHeaders['User-Agent'] = auth.authData.headers['User-Agent'];
-            if (auth.authData.headers['Cookie']) requestHeaders['Cookie'] = auth.authData.headers['Cookie'];
-            // NOTA: NUNCA injetamos o 'Host' ou 'Referer' do portal aqui, senão o servidor bloqueia o vídeo!
+            // 🔥 IMITAÇÃO PROFISSIONAL DE BOX (MAG/STBemu) 🔥
+            requestHeaders['User-Agent'] = auth.authData.headers['User-Agent'];
+            requestHeaders['Cookie'] = auth.authData.headers['Cookie'];
+            requestHeaders['Referer'] = configData.url.endsWith('/') ? configData.url : configData.url + '/';
+            requestHeaders['X-User-Agent'] = auth.authData.headers['User-Agent'];
 
             let stalkerCmd = decodeURIComponent(channelId);
-            if (stalkerCmd.includes('%')) stalkerCmd = decodeURIComponent(stalkerCmd);
-
-            let sUrl = "";
-            if (type === "movie" || type === "series") {
-                sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-            } else {
-                const cmd = encodeURIComponent(stalkerCmd.startsWith('ffrt') ? stalkerCmd : `ffrt http://localhost/ch/${stalkerCmd}`);
-                sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-            }
+            let sUrl = `${auth.api}type=${type === "tv" ? "itv" : "vod"}&action=create_link&cmd=${encodeURIComponent(stalkerCmd.startsWith('ffrt') ? stalkerCmd : 'ffrt http://localhost/ch/' + stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
 
             const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
             let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
 
             if (typeof streamUrl === 'string') {
                 let cleanUrl = streamUrl.trim();
-
-                // Limpeza do link (Remover localhost e ffmpeg)
                 if (cleanUrl.includes('http://localhost/ch/')) {
                     const parts = cleanUrl.split('http://localhost/ch/');
-                    const basePart = parts[0].replace(/ffmpeg\s*$/, "").trim();
-                    const channelPart = parts[1].trim();
-                    finalUrl = basePart + (basePart.endsWith('/') ? '' : '/') + channelPart;
+                    finalUrl = parts[0].replace(/ffmpeg\s*$/, "").trim() + '/' + parts[1].trim();
                 } else {
                     finalUrl = cleanUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                 }
-
                 if (!finalUrl.startsWith('http')) {
                     const baseServer = configData.url.replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
                     finalUrl = baseServer + (finalUrl.startsWith('/') ? finalUrl : '/' + finalUrl);
                 }
-            } else {
-                return res.status(404).end();
             }
         }
 
-        // 1. VIA RÁPIDA (FILMES) - Intacta, como pediste.
-        if (type !== 'tv' || finalUrl.includes('.m3u8') || finalUrl.includes('.m3u')) {
+        // 1. VIA RÁPIDA (VOD) - Continua a funcionar por Redirect como já tinhas aprovado
+        if (type !== 'tv' || finalUrl.includes('.m3u8')) {
             console.log(`[REDIRECT VOD] ${finalUrl}`);
             return res.redirect(302, finalUrl);
         }
 
-        // 2. VIA BLINDADA (TV) - Imita exatamente o STBemu
+        // 2. VIA PROXY (TV) - Agora com Headers de Identidade Total
+        console.log(`[PROXY TV] A abrir canal com Identidade Box: ${finalUrl}`);
+        
         if (req.headers.range) requestHeaders['Range'] = req.headers.range;
 
         const videoResponse = await axios({
@@ -260,24 +252,26 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             url: finalUrl,
             headers: requestHeaders,
             responseType: 'stream',
-            timeout: 0,
+            timeout: 10000, // Timeout de 10s para não ficar ecrã preto infinito
             maxRedirects: 5,
             validateStatus: false
         });
 
-        if (videoResponse.status >= 400) {
-            console.log(`[ERRO IPTV] Rejeitado: ${videoResponse.status}`);
-            return res.status(videoResponse.status).end();
+        if (videoResponse.status === 401 || videoResponse.status === 403) {
+            console.error(`[ERRO IPTV] O servidor barrou o Proxy (Status ${videoResponse.status}). A tentar alternativa...`);
+            // Se o Proxy falhar com 401, tentamos o Redirect como última esperança
+            return res.redirect(302, finalUrl);
         }
 
         res.status(videoResponse.status);
         res.setHeader("Access-Control-Allow-Origin", "*");
-        res.setHeader("Connection", "keep-alive");
         
-        // Copiamos apenas os cabeçalhos de vídeo que interessam ao player do Stremio
-        ['content-type', 'content-length', 'content-range', 'accept-ranges'].forEach(h => {
+        // Copiar cabeçalhos vitais do fluxo de vídeo
+        const importantHeaders = ['content-type', 'content-length', 'content-range', 'accept-ranges'];
+        importantHeaders.forEach(h => {
             if (videoResponse.headers[h]) res.setHeader(h, videoResponse.headers[h]);
         });
+        
         if (!res.getHeader('content-type')) res.setHeader('Content-Type', 'video/mp2t');
 
         videoResponse.data.pipe(res);
@@ -287,7 +281,7 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         });
 
     } catch (e) {
-        console.error(`[ERRO PROXY] ${e.message}`);
+        console.error(`[ERRO CRÍTICO] ${e.message}`);
         if (!res.headersSent) res.status(500).end();
     }
 });
