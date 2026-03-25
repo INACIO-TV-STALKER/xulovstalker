@@ -176,7 +176,6 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
 });
 
 
-// 🔥 O PROXY INTELIGENTE - Híbrido: Redireciona VOD, Protege TV 🔥
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -187,7 +186,13 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
     try {
         let finalUrl = "";
-        let requestHeaders = { 'Connection': 'keep-alive', 'Accept': '*/*' };
+        
+        // 🔥 IDENTIDADE PURA DE UMA BOX (STBEMU/MAG) PARA O VÍDEO 🔥
+        let requestHeaders = { 
+            'User-Agent': 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3',
+            'Accept': '*/*',
+            'Connection': 'keep-alive'
+        };
 
         if (configData.type === 'xtream') {
             const baseUrl = configData.url.replace(/\/$/, "");
@@ -199,6 +204,11 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         else {
             const auth = await addon.authenticate(configData);
             if (!auth) return res.status(401).end();
+
+            // Injetamos o User-Agent e o MAC (Cookie) reais usados no login do portal
+            if (auth.authData.headers['User-Agent']) requestHeaders['User-Agent'] = auth.authData.headers['User-Agent'];
+            if (auth.authData.headers['Cookie']) requestHeaders['Cookie'] = auth.authData.headers['Cookie'];
+            // NOTA: NUNCA injetamos o 'Host' ou 'Referer' do portal aqui, senão o servidor bloqueia o vídeo!
 
             let stalkerCmd = decodeURIComponent(channelId);
             if (stalkerCmd.includes('%')) stalkerCmd = decodeURIComponent(stalkerCmd);
@@ -217,7 +227,7 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             if (typeof streamUrl === 'string') {
                 let cleanUrl = streamUrl.trim();
 
-                // 🔥 A LIMPEZA VITAL PARA A TV FUNCIONAR 🔥
+                // Limpeza do link (Remover localhost e ffmpeg)
                 if (cleanUrl.includes('http://localhost/ch/')) {
                     const parts = cleanUrl.split('http://localhost/ch/');
                     const basePart = parts[0].replace(/ffmpeg\s*$/, "").trim();
@@ -231,22 +241,18 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
                     const baseServer = configData.url.replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
                     finalUrl = baseServer + (finalUrl.startsWith('/') ? finalUrl : '/' + finalUrl);
                 }
-
-                requestHeaders = { ...auth.authData.headers, ...requestHeaders };
             } else {
                 return res.status(404).end();
             }
         }
 
-        // 🔥 1. A VIA RÁPIDA (FILMES E PLAYLISTS) 🔥
+        // 1. VIA RÁPIDA (FILMES) - Intacta, como pediste.
         if (type !== 'tv' || finalUrl.includes('.m3u8') || finalUrl.includes('.m3u')) {
-            console.log(`[REDIRECT VOD] A enviar direto para: ${finalUrl}`);
+            console.log(`[REDIRECT VOD] ${finalUrl}`);
             return res.redirect(302, finalUrl);
         }
 
-        // 🔥 2. A VIA BLINDADA (CANAIS DE TV) 🔥
-        console.log(`[PROXY TV] A proteger transmissão de TV para: ${finalUrl}`);
-        req.socket.setTimeout(0);
+        // 2. VIA BLINDADA (TV) - Imita exatamente o STBemu
         if (req.headers.range) requestHeaders['Range'] = req.headers.range;
 
         const videoResponse = await axios({
@@ -260,20 +266,19 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         });
 
         if (videoResponse.status >= 400) {
-            console.log(`[ERRO IPTV] O servidor recusou o canal com status: ${videoResponse.status}`);
+            console.log(`[ERRO IPTV] Rejeitado: ${videoResponse.status}`);
             return res.status(videoResponse.status).end();
         }
 
         res.status(videoResponse.status);
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader("Connection", "keep-alive");
-        res.setHeader("Accept-Ranges", "bytes");
-
-        let cType = videoResponse.headers['content-type'] || "video/mp2t";
-        res.setHeader("Content-Type", cType);
-
-        if (videoResponse.headers['content-length']) res.setHeader("Content-Length", videoResponse.headers['content-length']);
-        if (videoResponse.headers['content-range']) res.setHeader("Content-Range", videoResponse.headers['content-range']);
+        
+        // Copiamos apenas os cabeçalhos de vídeo que interessam ao player do Stremio
+        ['content-type', 'content-length', 'content-range', 'accept-ranges'].forEach(h => {
+            if (videoResponse.headers[h]) res.setHeader(h, videoResponse.headers[h]);
+        });
+        if (!res.getHeader('content-type')) res.setHeader('Content-Type', 'video/mp2t');
 
         videoResponse.data.pipe(res);
 
