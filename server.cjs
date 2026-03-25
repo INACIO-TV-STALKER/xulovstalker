@@ -176,7 +176,7 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
 });
 
 
-// 🔥 O REDIRECIONADOR MESTRE - Zero consumo de dados de vídeo no Render 🔥
+// 🔥 O PROXY INTELIGENTE - Híbrido: Redireciona VOD, Protege TV 🔥
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -187,15 +187,15 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
     try {
         let finalUrl = "";
+        let requestHeaders = { 'Connection': 'keep-alive', 'Accept': '*/*' };
 
-        // 1. Lógica para Xtream Codes
         if (configData.type === 'xtream') {
             const baseUrl = configData.url.replace(/\/$/, "");
+            requestHeaders['User-Agent'] = 'VLC/3.0.18 LibVLC/3.0.18';
             if (type === 'movie') finalUrl = `${baseUrl}/movie/${configData.user}/${configData.pass}/${channelId}`;
             else if (type === 'series') finalUrl = `${baseUrl}/series/${configData.user}/${configData.pass}/${channelId}`;
             else finalUrl = `${baseUrl}/${configData.user}/${configData.pass}/${channelId}`;
         } 
-        // 2. Lógica Mágica para Stalker
         else {
             const auth = await addon.authenticate(configData);
             if (!auth) return res.status(401).end();
@@ -221,23 +221,61 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
                     const baseServer = configData.url.replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
                     finalUrl = baseServer + (finalUrl.startsWith('/') ? finalUrl : '/' + finalUrl);
                 }
+
+                requestHeaders = { ...auth.authData.headers, ...requestHeaders };
             } else {
                 return res.status(404).end();
             }
         }
 
-        // 🔥 A MÁGICA: O REDIRECIONAMENTO (Redirect 302) 🔥
-        // Em vez de puxar o vídeo para o Render, mandamos o Stremio ir direto à fonte.
-        if (finalUrl) {
-            console.log(`[REDIRECIONAMENTO] A enviar o Stremio direto para: ${finalUrl}`);
+        // 🔥 1. A VIA RÁPIDA (FILMES E PLAYLISTS) 🔥
+        // Se for Filme/Série, usamos Redirect para não gastar dados do Render (Já confirmaste que funciona).
+        if (type !== 'tv' || finalUrl.includes('.m3u8') || finalUrl.includes('.m3u')) {
+            console.log(`[REDIRECT VOD/M3U8] A enviar direto para: ${finalUrl}`);
             return res.redirect(302, finalUrl);
-        } else {
-            return res.status(404).end();
         }
 
+        // 🔥 2. A VIA BLINDADA (CANAIS DE TV) 🔥
+        // A TV precisa dos headers (User-Agent e Cookie MAC) escondidos do Render para não ir abaixo.
+        console.log(`[PROXY TV] A proteger transmissão de TV: ${channelId}`);
+        req.socket.setTimeout(0);
+        if (req.headers.range) requestHeaders['Range'] = req.headers.range;
+
+        const videoResponse = await axios({
+            method: 'get',
+            url: finalUrl,
+            headers: requestHeaders,
+            responseType: 'stream',
+            timeout: 0,
+            maxRedirects: 5,
+            validateStatus: false
+        });
+
+        if (videoResponse.status >= 400) {
+            return res.status(videoResponse.status).end();
+        }
+
+        res.status(videoResponse.status);
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Connection", "keep-alive");
+        res.setHeader("Accept-Ranges", "bytes");
+
+        let cType = videoResponse.headers['content-type'] || "video/mp2t";
+        res.setHeader("Content-Type", cType);
+
+        if (videoResponse.headers['content-length']) res.setHeader("Content-Length", videoResponse.headers['content-length']);
+        if (videoResponse.headers['content-range']) res.setHeader("Content-Range", videoResponse.headers['content-range']);
+
+        videoResponse.data.pipe(res);
+
+        req.on('close', () => {
+            if (videoResponse.data) videoResponse.data.destroy();
+        });
+
     } catch (e) {
-        console.error(`[FALHA] Erro ao obter link direto: ${e.message}`);
-        return res.status(500).end();
+        console.error(`[ERRO PROXY] ${e.message}`);
+        if (!res.headersSent) res.status(500).end();
     }
 });
+
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Tizen Addon Online na porta ${PORT}`));
