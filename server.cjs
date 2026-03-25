@@ -175,8 +175,7 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
 
-
-// 🔥 PROXY PROFISSIONAL - RESOLUÇÃO DE IP-LOCK PARA FILMES 🔥
+// 🔥 PROXY PROFISSIONAL - RESOLUÇÃO DE IP-LOCK E LINKS 404 🔥
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -198,11 +197,9 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
                        type === 'movie' ? `${baseUrl}/movie/${configData.user}/${configData.pass}/${channelId}` :
                        `${baseUrl}/series/${configData.user}/${configData.pass}/${channelId}`;
             
-            // Xtream geralmente aceita Redirect bem. Se falhar, mudamos para Proxy.
             return res.redirect(302, finalUrl);
         } 
         else {
-            // STALKER - USAR SEMPRE PROXY PARA EVITAR BLOQUEIO DE IP
             const auth = await addon.authenticate(configData);
             if (!auth) return res.status(401).end();
 
@@ -212,14 +209,25 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             requestHeaders['Referer'] = configData.url.replace(/\/$/, "") + "/c/";
 
             let stalkerCmd = decodeURIComponent(channelId);
-            let sUrl = `${auth.api}type=${type === "tv" ? "itv" : "vod"}&action=create_link&cmd=${encodeURIComponent(stalkerCmd.startsWith('ffrt') ? stalkerCmd : 'ffrt http://localhost/ch/' + stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+            if (stalkerCmd.includes('%')) stalkerCmd = decodeURIComponent(stalkerCmd);
+
+            let sUrl = "";
+            
+            // 🔥 A CORREÇÃO ESTÁ AQUI: Separação estrita entre VOD e TV 🔥
+            if (type === "movie" || type === "series") {
+                // Filmes enviam o ID puro (Base64)
+                sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+            } else {
+                // TV leva o truque do ffrt localhost
+                const cmd = encodeURIComponent(stalkerCmd.startsWith('ffrt') ? stalkerCmd : `ffrt http://localhost/ch/${stalkerCmd}`);
+                sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+            }
 
             const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
             let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
 
             if (typeof streamUrl === 'string') {
                 let cleanUrl = streamUrl.trim();
-                // Limpeza profissional do link
                 if (cleanUrl.includes('http://localhost/ch/')) {
                     const parts = cleanUrl.split('http://localhost/ch/');
                     finalUrl = parts[0].replace(/ffmpeg\s*$/, "").trim() + '/' + parts[1].trim();
@@ -233,9 +241,11 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             }
         }
 
-        if (!finalUrl) return res.status(404).end();
+        if (!finalUrl) {
+            console.error(`[PROXY] Falha ao gerar link final para: ${channelId}`);
+            return res.status(404).end();
+        }
 
-        // 🔥 O PONTO CHAVE: Forçamos o Proxy para tudo o que for Stalker 🔥
         console.log(`[PROXY] A servir ${type}: ${finalUrl}`);
         
         if (req.headers.range) requestHeaders['Range'] = req.headers.range;
@@ -250,7 +260,6 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             validateStatus: false
         });
 
-        // Se o servidor IPTV der erro, tentamos um redirect de última hora
         if (videoResponse.status >= 400) {
             console.log(`[PROXY] Erro ${videoResponse.status}, a tentar redirect...`);
             return res.redirect(302, finalUrl);
@@ -259,7 +268,6 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         res.status(videoResponse.status);
         res.setHeader("Access-Control-Allow-Origin", "*");
         
-        // Cabeçalhos para o player do Stremio não engasgar
         const h = videoResponse.headers;
         if (h['content-type']) res.setHeader("Content-Type", h['content-type']);
         if (h['content-length']) res.setHeader("Content-Length", h['content-length']);
@@ -268,7 +276,6 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
         videoResponse.data.pipe(res);
 
-        // Limpeza de memória ao fechar
         req.on('close', () => {
             if (videoResponse.data) videoResponse.data.destroy();
         });
