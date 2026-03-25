@@ -228,32 +228,58 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             }
 
             const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
-            let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
+            
+            // 🔧 MELHORIA: Extração robusta da URL do stream (suporta diferentes estruturas de resposta)
+            let streamUrl = null;
+            const data = linkRes.data;
+            if (data?.js?.cmd) streamUrl = data.js.cmd;
+            else if (data?.js?.url) streamUrl = data.js.url;
+            else if (data?.cmd) streamUrl = data.cmd;
+            else if (data?.url) streamUrl = data.url;
+            else if (data?.js && typeof data.js === 'string') streamUrl = data.js;
+            else if (typeof data === 'string') streamUrl = data;
+            else if (data?.js?.data && typeof data.js.data === 'object') {
+                streamUrl = data.js.data.cmd || data.js.data.url;
+            }
 
             if (typeof streamUrl === 'string') {
-                finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim(); // Corrigido erro de sintaxe gerado na tua cópia
+                finalUrl = streamUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
 
-                // 🔥 CORREÇÃO: Se a URL não começar com http, constrói caminho completo
+                // 🔧 MELHORIA: Se a URL não começar com http, constrói caminho completo
                 if (!finalUrl.startsWith('http')) {
                     const baseServer = configData.url.replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
                     finalUrl = baseServer + (finalUrl.startsWith('/') ? finalUrl : '/' + finalUrl);
                 }
 
+                // 🔧 MELHORIA: Para VOD/Series, adiciona token e sn na query string se não estiverem presentes
+                if ((type === 'movie' || type === 'series') && auth.token && auth.authData.sn) {
+                    try {
+                        const urlObj = new URL(finalUrl);
+                        if (!urlObj.searchParams.has('token')) urlObj.searchParams.set('token', auth.token);
+                        if (!urlObj.searchParams.has('sn')) urlObj.searchParams.set('sn', auth.authData.sn);
+                        finalUrl = urlObj.toString();
+                    } catch (e) {
+                        // Se a URL for inválida, mantém como está
+                    }
+                }
+
                 // O SEGREDO: Copiar EXATAMENTE a identidade da box gerada no addon.cjs para puxar o vídeo
                 requestHeaders = { ...auth.authData.headers, ...requestHeaders };
-                console.log(`\n[PROXY] Stalker a pedir ${type} ID ${stalkerCmd}.`);
+                console.log(`\n[PROXY] Stalker a pedir ${type} ID ${stalkerCmd}. URL final: ${finalUrl}`);
             } else {
-                if (!finalUrl || !finalUrl.startsWith('http')) {
-                    console.log(`[PROXY] Error: Link final inválido.`);
-                    return res.status(404).end();
-                }
+                console.log(`[PROXY] Error: Link final inválido.`);
+                return res.status(404).end();
             }
-        } // <---- A CHAVETA QUE FALTAVA FOI COLOCADA AQUI
+        }
 
         // --- 3. REPASSE DE VÍDEO SEGURO E COM SUPORTE A FILMES (Axios Configurado Corretamente) ---
         try {
-            // Removemos o Timeout para o Stremio não cortar a ligação
-            req.socket.setTimeout(0);
+            // Removemos o Timeout para o Stremio não cortar a ligação (mas definimos um timeout alto)
+            req.socket.setTimeout(10 * 60 * 1000); // 10 minutos
+            req.socket.on('timeout', () => {
+                if (!res.headersSent) res.status(504).end();
+                req.destroy();
+            });
 
             // CRÍTICO PARA FILMES: Se o Stremio pedir para avançar, passamos esse pedido ao portal
             if (req.headers.range) {
@@ -267,8 +293,8 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
                 url: finalUrl,
                 headers: requestHeaders,
                 responseType: 'stream',
-                timeout: 0,
-                maxRedirects: 5, // Segue até 5 redirecionamentos (Essencial para VOD)
+                timeout: 0, // Não timeout na requisição, pois o stream pode ser longo
+                maxRedirects: 5,
                 validateStatus: false
             });
 
@@ -297,6 +323,13 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
             videoResponse.data.pipe(res);
 
+            // 🔧 MELHORIA: Trata erros no stream para não quebrar a ligação silenciosamente
+            videoResponse.data.on('error', (err) => {
+                console.error(`[PROXY] Erro no stream de vídeo: ${err.message}`);
+                if (!res.headersSent) res.status(500).end();
+                videoResponse.data.destroy();
+            });
+
             req.on('close', () => {
                 if (videoResponse.data) videoResponse.data.destroy();
             });
@@ -312,4 +345,4 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     }
 });
 
-app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Addon Multi-Hub Online na porta ${PORT}`));
+app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Tizen Addon Online na porta ${PORT}`));
