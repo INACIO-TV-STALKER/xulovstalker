@@ -175,7 +175,6 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
 
-// 🔥 PROXY PROFISSIONAL V3 - RESOLUÇÃO DE QUEDAS EM VOD 🔥
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -196,7 +195,6 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             finalUrl = type === 'tv' ? `${baseUrl}/${configData.user}/${configData.pass}/${channelId}` : 
                        type === 'movie' ? `${baseUrl}/movie/${configData.user}/${configData.pass}/${channelId}` :
                        `${baseUrl}/series/${configData.user}/${configData.pass}/${channelId}`;
-            return res.redirect(302, finalUrl); // Xtream continua direto
         } 
         else {
             const auth = await addon.authenticate(configData);
@@ -210,6 +208,7 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             let stalkerCmd = decodeURIComponent(channelId);
             let sUrl = "";
             
+            // Separação limpa na criação do link
             if (type === "movie" || type === "series") {
                 sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             } else {
@@ -235,40 +234,46 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             }
         }
 
-        if (!finalUrl) return res.status(404).end();
-
-        // 🔥 O SEGREDO DA ESTABILIDADE 🔥
-        // Passamos o Range do player (Stremio) para o servidor IPTV
-        if (req.headers.range) {
-            requestHeaders['Range'] = req.headers.range;
+        if (!finalUrl) {
+            console.error(`[ERRO PROXY] Falha ao gerar link final para: ${channelId}`);
+            return res.status(404).end();
         }
 
-        console.log(`[PROXY ACTIVE] A servir ${type}: ${finalUrl}`);
+        // 🔥 REPOSIÇÃO (Como estava ontem): Filmes/Séries vão por REDIRECT DIRETO 🔥
+        if (type === "movie" || type === "series") {
+            console.log(`[REDIRECT VOD] A enviar diretamente para o player: ${finalUrl}`);
+            return res.redirect(302, finalUrl);
+        }
+
+        // 🔥 A TV Continua pelo Proxy para não ser bloqueada 🔥
+        console.log(`[PROXY TV] A servir canal blindado: ${finalUrl}`);
+        
+        if (req.headers.range) requestHeaders['Range'] = req.headers.range;
 
         const videoResponse = await axios({
             method: 'get',
             url: finalUrl,
             headers: requestHeaders,
             responseType: 'stream',
-            timeout: 0, // 👈 IMPORTANTE: Sem timeout para não cair aos 40 segundos
+            timeout: 10000,
             maxRedirects: 5,
             validateStatus: false
         });
 
-        // Se o servidor IPTV rejeitar o proxy, tentamos redirect como última opção
         if (videoResponse.status >= 400) {
+            console.log(`[PROXY TV] Erro ${videoResponse.status}, a tentar redirect de emergência...`);
             return res.redirect(302, finalUrl);
         }
 
-        // Copiamos os cabeçalhos vitais do servidor IPTV para o Stremio
         res.status(videoResponse.status);
         res.setHeader("Access-Control-Allow-Origin", "*");
-        if (videoResponse.headers['content-type']) res.setHeader("Content-Type", videoResponse.headers['content-type']);
-        if (videoResponse.headers['content-length']) res.setHeader("Content-Length", videoResponse.headers['content-length']);
-        if (videoResponse.headers['content-range']) res.setHeader("Content-Range", videoResponse.headers['content-range']);
-        if (videoResponse.headers['accept-ranges']) res.setHeader("Accept-Ranges", "bytes");
+        
+        const h = videoResponse.headers;
+        if (h['content-type']) res.setHeader("Content-Type", h['content-type']);
+        if (h['content-length']) res.setHeader("Content-Length", h['content-length']);
+        if (h['content-range']) res.setHeader("Content-Range", h['content-range']);
+        res.setHeader("Accept-Ranges", "bytes");
 
-        // Canalizamos o vídeo bit a bit
         videoResponse.data.pipe(res);
 
         req.on('close', () => {
