@@ -175,6 +175,7 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
 
+// 🔥 CONFIGURAÇÃO UNIVERSAL COM LISTA NEGRA INTELIGENTE 🔥
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -182,21 +183,33 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const configData = lists[listIdx];
     if (!configData) return res.status(400).end();
 
+    // 💡 LISTA NEGRA: Adiciona aqui uma palavra do link de qualquer servidor que vá abaixo aos 40s
+    // Basta colocar entre aspas simples e separar com vírgulas.
+    const servidoresComBloqueio = [
+        'elrinconcito', 
+        'luzentreaoceanos', 
+        'p1d5753'
+    ];
+
     try {
         let finalUrl = "";
         let requestHeaders = { 
             'User-Agent': 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 27211 Safari/533.3',
-            'Connection': 'keep-alive' 
+            // A TV precisa de keep-alive, os filmes da lista negra precisam de close para não prender a ligação
+            'Connection': (type === 'movie' || type === 'series') ? 'close' : 'keep-alive' 
         };
 
+        // 1. XTREAM - SEMPRE REDIRECT (Gasto: 0 GB)
         if (configData.type === 'xtream') {
             const baseUrl = configData.url.replace(/\/$/, "");
             requestHeaders['User-Agent'] = 'VLC/3.0.18 LibVLC/3.0.18';
             finalUrl = type === 'tv' ? `${baseUrl}/${configData.user}/${configData.pass}/${channelId}` : 
                        type === 'movie' ? `${baseUrl}/movie/${configData.user}/${configData.pass}/${channelId}` :
                        `${baseUrl}/series/${configData.user}/${configData.pass}/${channelId}`;
+            return res.redirect(302, finalUrl);
         } 
         else {
+            // STALKER
             const auth = await addon.authenticate(configData);
             if (!auth) return res.status(401).end();
 
@@ -208,10 +221,11 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             let stalkerCmd = decodeURIComponent(channelId);
             let sUrl = "";
             
-            // Separação limpa na criação do link
+            // Separação limpa: Filmes vs TV
             if (type === "movie" || type === "series") {
                 sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             } else {
+                // TV mantém a lógica original "ffrt localhost" para arrancar rápido
                 const cmd = encodeURIComponent(stalkerCmd.startsWith('ffrt') ? stalkerCmd : `ffrt http://localhost/ch/${stalkerCmd}`);
                 sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             }
@@ -234,19 +248,20 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             }
         }
 
-        if (!finalUrl) {
-            console.error(`[ERRO PROXY] Falha ao gerar link final para: ${channelId}`);
-            return res.status(404).end();
-        }
+        if (!finalUrl) return res.status(404).end();
 
-        // 🔥 REPOSIÇÃO (Como estava ontem): Filmes/Séries vão por REDIRECT DIRETO 🔥
-        if (type === "movie" || type === "series") {
-            console.log(`[REDIRECT VOD] A enviar diretamente para o player: ${finalUrl}`);
+        // 🔥 FILTRO INTELIGENTE PARA VOD (Filmes/Séries) 🔥
+        // Verifica se o servidor atual está na nossa "Lista Negra"
+        const precisaDeProxy = servidoresComBloqueio.some(s => configData.url.toLowerCase().includes(s));
+
+        // Se for Filme/Série e NÃO precisar de proxy, faz Redirect direto (Gasto 0 GB no Render)
+        if ((type === 'movie' || type === 'series') && !precisaDeProxy) {
+            console.log(`[DATA SAVER] Servidor limpo. A redirecionar diretamente para poupar dados: ${finalUrl}`);
             return res.redirect(302, finalUrl);
         }
 
-        // 🔥 A TV Continua pelo Proxy para não ser bloqueada 🔥
-        console.log(`[PROXY TV] A servir canal blindado: ${finalUrl}`);
+        // Daqui para baixo é apenas para a TV (Sempre Proxy) e para VODs da Lista Negra
+        console.log(`[PROXY ACTIVO] A processar ${type} para garantir estabilidade: ${finalUrl}`);
         
         if (req.headers.range) requestHeaders['Range'] = req.headers.range;
 
@@ -255,29 +270,25 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             url: finalUrl,
             headers: requestHeaders,
             responseType: 'stream',
-            timeout: 10000,
+            timeout: 0, // Fundamental para os filmes da lista negra não caírem
             maxRedirects: 5,
             validateStatus: false
         });
 
-        if (videoResponse.status >= 400) {
-            console.log(`[PROXY TV] Erro ${videoResponse.status}, a tentar redirect de emergência...`);
-            return res.redirect(302, finalUrl);
-        }
+        // Redirect de emergência caso o IPTV rejeite o proxy
+        if (videoResponse.status >= 400) return res.redirect(302, finalUrl);
 
         res.status(videoResponse.status);
         res.setHeader("Access-Control-Allow-Origin", "*");
-        
-        const h = videoResponse.headers;
-        if (h['content-type']) res.setHeader("Content-Type", h['content-type']);
-        if (h['content-length']) res.setHeader("Content-Length", h['content-length']);
-        if (h['content-range']) res.setHeader("Content-Range", h['content-range']);
+        if (videoResponse.headers['content-type']) res.setHeader("Content-Type", videoResponse.headers['content-type']);
+        if (videoResponse.headers['content-length']) res.setHeader("Content-Length", videoResponse.headers['content-length']);
+        if (videoResponse.headers['content-range']) res.setHeader("Content-Range", videoResponse.headers['content-range']);
         res.setHeader("Accept-Ranges", "bytes");
 
         videoResponse.data.pipe(res);
-
-        req.on('close', () => {
-            if (videoResponse.data) videoResponse.data.destroy();
+        
+        req.on('close', () => { 
+            if (videoResponse.data) videoResponse.data.destroy(); 
         });
 
     } catch (e) {
@@ -285,5 +296,6 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         if (!res.headersSent) res.status(500).end();
     }
 });
+
 
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Tizen Addon Online na porta ${PORT}`));
