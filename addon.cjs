@@ -11,23 +11,32 @@ function setCache(key, data, ttlMinutes = 30) {
 }
 
 const getStalkerAuth = function(config, token) {
-    var mac = (config.mac || "").toUpperCase();
-    var seed = mac.replace(/:/g, "");
-    var id1 = config.id1 || crypto.createHash('md5').update(seed + "id1").digest('hex').toUpperCase();
-    var id2 = config.id2 || crypto.createHash('md5').update(seed + "id2").digest('hex').toUpperCase();
-    var sig = config.sig || crypto.createHash('md5').update(seed + "sig").digest('hex').toUpperCase();
-    var sn  = config.sn  || crypto.createHash('md5').update(seed + "sn").digest('hex').substring(0, 13).toUpperCase();
-    var cookie = "mac=" + encodeURIComponent(mac) + "; stb_lang=en; timezone=Europe/Lisbon;";
-    if (token) cookie += " access_token=" + token + ";";
+    const mac = (config.mac || "").toUpperCase();
+    
+    // 💡 Em vez de MD5 aleatório, usamos IDs que "parecem" reais.
+    // Se o servidor for muito rigoroso, podes depois tentar meter aqui o SN e ID da tua box real.
+    const sn  = config.sn  || "123456789012"; 
+    const id1 = config.id1 || "5A6B7C8D9E0F1A2B3C4D5E6F"; 
+    const sig = config.sig || "6D884C699E2A89C71D2D5E1E6B9E8A7F";
+
+    // 💡 Montagem do Cookie (Precisão é tudo aqui)
+    let cookie = `mac=${encodeURIComponent(mac)}; stb_lang=en; timezone=Europe/Lisbon;`;
+    if (token) cookie += ` access_token=${token};`;
+
+    // 💡 O X-User-Agent tem de ser uma string exacta, sem falhas.
+    const xUserAgent = `Model: MAG250; SW: 0.2.18-r14; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
 
     return {
-        sn: sn, id1: id1, id2: id2, sig: sig,
+        sn: sn,
+        id1: id1,
+        sig: sig,
         headers: {
-            "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 27211 Safari/533.3",
-            "X-User-Agent": "Model: MAG322; SW: 2.20.0-r19-322; Device ID: " + id1 + "; Device ID2: " + id2 + "; Signature: " + sig + ";",
-            "Cookie": cookie, 
-            "Referer": config.url.replace(/\/$/, "") + "/c/", 
-            "Connection": "keep-alive"
+            "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3",
+            "X-User-Agent": xUserAgent,
+            "Cookie": cookie,
+            "Referer": config.url.replace(/\/$/, "") + "/c/",
+            "Accept": "*/*",
+            "Connection": "Keep-Alive"
         }
     };
 };
