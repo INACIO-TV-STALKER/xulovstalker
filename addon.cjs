@@ -90,6 +90,7 @@ const addon = {
                     catalogs.push({ type: "movie", id: `mov_${i}`, name: `${l.name || `Lista ${i+1}`} 🎬`, extra: [{ name: "genre", options: movG.concat(c2).filter(Boolean) }, { name: "skip" }] });
                     catalogs.push({ type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿`, extra: [{ name: "genre", options: serG.concat(c3).filter(Boolean) }, { name: "skip" }] });
                 } else {
+                    // 🔥 STALKER: Apenas TV, sem Filmes nem Séries!
                     const auth = await addon.authenticate(l);
                     if (auth) {
                         const r = await axios.get(`${auth.api}type=itv&action=get_genres&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, { headers: auth.authData.headers, timeout: 4000 });
@@ -112,6 +113,7 @@ const addon = {
         const lIdx = parseInt(id.split('_')[1]);
         const config = lists[lIdx]; if (!config) return { metas: [] };
         
+        // 🔥 PROTEÇÃO: Se for Stalker e pedirem Filmes/Séries, ignora sem dar erro.
         if (config.type !== 'xtream' && type !== 'tv') return { metas: [] };
 
         const skip = parseInt(extra.skip) || 0;
@@ -133,6 +135,7 @@ const addon = {
                     name: item.name || item.title, type: type, poster: item.stream_icon || item.cover, posterShape: type === "tv" ? "landscape" : "poster"
                 }));
             } else {
+                // 🔥 STALKER: Lógica 100% dedicada aos canais (itv)
                 const auth = await addon.authenticate(config);
                 if (auth) {
                     let catP = "";
@@ -168,18 +171,34 @@ const addon = {
         const lists = this.parseConfig(configBase64); const config = lists[lIdx];
         const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
 
+        // 🔥 PROTEÇÃO STREAM: Bloqueia streams de filmes/séries no Stalker
         if (config?.type !== 'xtream' && type !== 'tv') return { streams: [] };
 
         if (config?.type === 'xtream') {
             const b = config.url.trim().replace(/\/$/, "");
             if (type === 'tv') {
-                return { streams: [{ url: `${b}/${config.user}/${config.pass}/${sId}`, title: `📺 Directo Xtream`, behaviorHints: { notWebReady: true } }] };
+                return { streams: [{ url: `${b}/${config.user}/${config.pass}/${sId}`, title: `📺 Directo`, behaviorHints: { notWebReady: true } }, { url: pUrl, title: `🛡️ Proxy`, behaviorHints: { notWebReady: true } }] };
             }
+            return { streams: [{ url: pUrl, title: `🎬 Reproduzir Xtream`, behaviorHints: { notWebReady: true } }] };
         }
 
-        // 🔥 CORREÇÃO DE VELOCIDADE: Cortámos a espera!
-        // O Stremio não precisa de validar o canal agora. Ele mostra o botão de Play imediatamente!
-        return { streams: [{ url: pUrl, title: `⚡ Reproduzir TV`, behaviorHints: { notWebReady: true } }] };
+        // 🔥 STALKER: Apenas gera links para Canais de TV ('itv')
+        let streams = [];
+        try {
+            const auth = await addon.authenticate(config);
+            if (auth) {
+                const linkUrl = `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent(decodeURIComponent(sId))}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                const res = await axios.get(linkUrl, { headers: auth.authData.headers, timeout: 5000 });
+                let cmdUrl = res.data?.js?.cmd || res.data?.js;
+                if (typeof cmdUrl === 'string') {
+                    let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+                    if (cleanUrl.startsWith('http')) streams.push({ url: cleanUrl, title: `⚡ Directo TV`, behaviorHints: { notWebReady: true } });
+                }
+            }
+        } catch(e) { console.error("[STREAM ERROR]", e.message); }
+        
+        streams.push({ url: pUrl, title: `🔄 Proxy Estável`, behaviorHints: { notWebReady: true } });
+        return { streams };
     }
 };
 
