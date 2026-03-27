@@ -218,7 +218,7 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
 
             let stalkerCmd = decodeURIComponent(channelId);
             let sUrl = "";
-            
+
             if (type === "movie" || type === "series") {
                 sUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(stalkerCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             } else {
@@ -230,21 +230,24 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
 
             if (typeof streamUrl === 'string') {
-                let cleanUrl = streamUrl.trim();
+                // 🔥 CORREÇÃO: Limpeza do link (remove o 'ffmpeg ' e garante que o url fica limpo)
+                let cleanUrl = streamUrl.trim().replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+
                 if (cleanUrl.includes('http://localhost/ch/')) {
                     const parts = cleanUrl.split('http://localhost/ch/');
                     finalUrl = parts[0].replace(/ffmpeg\s*$/, "").trim() + '/' + parts[1].trim();
+                } else if (cleanUrl.startsWith('http')) {
+                    finalUrl = cleanUrl;
                 } else {
-                    finalUrl = cleanUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-                }
-                if (!finalUrl.startsWith('http')) {
                     const baseServer = configData.url.replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
-                    finalUrl = baseServer + (finalUrl.startsWith('/') ? finalUrl : '/' + finalUrl);
+                    finalUrl = baseServer.replace(/\/$/, "") + (cleanUrl.startsWith('/') ? cleanUrl : '/' + cleanUrl);
                 }
+                
+                finalUrl = finalUrl.trim();
             }
         }
 
-                 if (!finalUrl) return res.status(404).end();
+        if (!finalUrl) return res.status(404).end();
 
         console.log(`[PROXY ATIVO] A mascarar IP para TV ao Vivo: ${finalUrl}`);
 
@@ -273,9 +276,9 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         res.status(200);
         res.setHeader("Access-Control-Allow-Origin", "*");
         if (videoResponse.headers['content-type']) res.setHeader("Content-Type", videoResponse.headers['content-type']);
-        
+
         videoResponse.data.pipe(res);
-        
+
         // Fechar se mudares de canal
         req.on('close', () => { 
             console.log("[PROXY] Canal fechado. A limpar ligação.");
@@ -287,6 +290,5 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
         if (!res.headersSent) res.status(500).end();
     }
 });
-
 
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Tizen Addon Online na porta ${PORT}`));
