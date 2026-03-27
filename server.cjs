@@ -183,8 +183,7 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     if (!configData) return res.status(400).end();
 
     // 💡 LISTA NEGRA: Servidores que cortam aos 30 segundos (TV ou Filmes)
-    const servidoresComBloqueio = [
-        'elrinconcito', 
+    const servidoresComBloqueio = [ 
         'luzentreaoceanos', 
         'p1d5753'
     ];
