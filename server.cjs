@@ -244,18 +244,49 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             }
         }
 
-         if (!finalUrl) return res.status(404).end();
+                 if (!finalUrl) return res.status(404).end();
 
-        // 🔥 CORREÇÃO ANTI-CORTE (Render Bypass): 
-        // Em vez de passar o canal pelo Render (que corta aos 20s), mandamos a tua TV 
-        // conectar-se diretamente à fonte mal carregues no Play!
-        console.log(`[RAPIDEZ] A redirecionar TV direto para a fonte: ${finalUrl}`);
-        return res.redirect(302, finalUrl);
+        console.log(`[PROXY ATIVO] A mascarar IP para TV ao Vivo: ${finalUrl}`);
+
+        // O SEGREDO: Remover os pedidos "aos bocados" da TV que fazem o servidor cortar
+        if (req.headers.range && type !== 'movie' && type !== 'series') {
+            delete req.headers.range; 
+        }
+
+        // Ligar o Render ao IPTV
+        const videoResponse = await axios({
+            method: 'get',
+            url: finalUrl,
+            headers: requestHeaders,
+            responseType: 'stream',
+            timeout: 0, // Sem tempo limite
+            maxRedirects: 5,
+            validateStatus: false
+        });
+
+        if (videoResponse.status >= 400) {
+            console.log(`[PROXY ERRO] Servidor rejeitou com ${videoResponse.status}`);
+            return res.status(videoResponse.status).end();
+        }
+
+        // Passar a emissão do Render para a TV
+        res.status(200);
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        if (videoResponse.headers['content-type']) res.setHeader("Content-Type", videoResponse.headers['content-type']);
+        
+        videoResponse.data.pipe(res);
+        
+        // Fechar se mudares de canal
+        req.on('close', () => { 
+            console.log("[PROXY] Canal fechado. A limpar ligação.");
+            if (videoResponse.data) videoResponse.data.destroy(); 
+        });
 
     } catch (e) {
-        console.error(`[PROXY ERROR] ${e.message}`);
+        console.error(`[PROXY ERROR FATAL] ${e.message}`);
         if (!res.headersSent) res.status(500).end();
     }
 });
+
 
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Tizen Addon Online na porta ${PORT}`));
