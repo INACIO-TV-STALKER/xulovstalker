@@ -1,4 +1,4 @@
-const axios = require("axios");
+8const axios = require("axios");
 const crypto = require("crypto");
 
 const memCache = {};
@@ -166,23 +166,25 @@ const addon = {
         return { meta: { id, type, name, posterShape: type === "tv" ? "landscape" : "poster" } };
     },
 
-    async getStreams(type, id, configBase64, host) {
+        async getStreams(type, id, configBase64, host) {
         const parts = id.split(":"); const lIdx = parseInt(parts[1]); const sId = parts[2];
         const lists = this.parseConfig(configBase64); const config = lists[lIdx];
         const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
 
-        // 🔥 PROTEÇÃO STREAM: Bloqueia streams de filmes/séries no Stalker
+        // Se for Stalker e pedirem Filmes/Séries, ignora
         if (config?.type !== 'xtream' && type !== 'tv') return { streams: [] };
 
         if (config?.type === 'xtream') {
             const b = config.url.trim().replace(/\/$/, "");
             if (type === 'tv') {
-                return { streams: [{ url: `${b}/${config.user}/${config.pass}/${sId}`, title: `📺 Directo`, behaviorHints: { notWebReady: true } }, { url: pUrl, title: `🛡️ Proxy`, behaviorHints: { notWebReady: true } }] };
+                return { streams: [
+                    { url: `${b}/${config.user}/${config.pass}/${sId}`, title: `📺 Xtream Directo` }, 
+                    { url: pUrl, title: `🛡️ Xtream Proxy` }
+                ] };
             }
-            return { streams: [{ url: pUrl, title: `🎬 Reproduzir Xtream`, behaviorHints: { notWebReady: true } }] };
         }
 
-        // 🔥 STALKER: Apenas gera links para Canais de TV ('itv')
+        // STALKER: Vai buscar o link direto à fonte (pode demorar uns segundos se o servidor for lento)
         let streams = [];
         try {
             const auth = await addon.authenticate(config);
@@ -192,16 +194,21 @@ const addon = {
                 let cmdUrl = res.data?.js?.cmd || res.data?.js;
                 if (typeof cmdUrl === 'string') {
                     let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-                    if (cleanUrl.startsWith('http')) streams.push({ url: cleanUrl, title: `⚡ Directo TV`, behaviorHints: { notWebReady: true } });
+                    if (cleanUrl.startsWith('http')) {
+                        // OPÇÃO 1: O teu servidor bom funciona aqui!
+                        streams.push({ url: cleanUrl, title: `⚡ Directo TV (Rápido)`, behaviorHints: { notWebReady: true } });
+                    }
                 }
             }
         } catch(e) { console.error("[STREAM ERROR]", e.message); }
         
-        streams.push({ url: pUrl, title: `🔄 Proxy Estável`, behaviorHints: { notWebReady: true } });
+        // OPÇÃO 2: O botão para o servidor teimoso!
+        streams.push({ url: pUrl, title: `🛡️ Proxy (Anti-Quedas)`, behaviorHints: { notWebReady: true } });
         return { streams };
     }
 };
 
 module.exports = addon;
+
 
 
