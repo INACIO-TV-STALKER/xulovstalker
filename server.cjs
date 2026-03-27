@@ -244,12 +244,12 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             }
         }
 
-                if (!finalUrl) return res.status(404).end();
+         if (!finalUrl) return res.status(404).end();
 
-        // 🔥 SOLUÇÃO PARA VELOCIDADE MÁXIMA E FIM DOS CORTES:
-        // Em vez de usarmos o Render como "túnel" (que causa o atraso e o corte aos 20s),
-        // mandamos a tua TV ligar-se DIRETAMENTE à fonte do vídeo.
-        console.log(`[RAPIDEZ] A enviar link direto para a TV: ${finalUrl}`);
+        // 🔥 CORREÇÃO ANTI-CORTE (Render Bypass): 
+        // Em vez de passar o canal pelo Render (que corta aos 20s), mandamos a tua TV 
+        // conectar-se diretamente à fonte mal carregues no Play!
+        console.log(`[RAPIDEZ] A redirecionar TV direto para a fonte: ${finalUrl}`);
         return res.redirect(302, finalUrl);
 
     } catch (e) {
