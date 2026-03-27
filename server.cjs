@@ -244,39 +244,13 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             }
         }
 
-        if (!finalUrl) return res.status(404).end();
+                if (!finalUrl) return res.status(404).end();
 
-        // Se for VOD e NÃO estiver na lista negra, Redirect direto (Poupa Render)
-        if ((type === 'movie' || type === 'series') && !precisaDeProxy) {
-            return res.redirect(302, finalUrl);
-        }
-
-        // Para TV ou Servidores Problemáticos -> PROXY
-        console.log(`[STABILITY MODE] A servir ${type} via Proxy (${precisaDeProxy ? 'Safe-Close' : 'Keep-Alive'}): ${finalUrl}`);
-        
-        if (req.headers.range) requestHeaders['Range'] = req.headers.range;
-
-        const videoResponse = await axios({
-            method: 'get',
-            url: finalUrl,
-            headers: requestHeaders,
-            responseType: 'stream',
-            timeout: 0,
-            maxRedirects: 5,
-            validateStatus: false
-        });
-
-        if (videoResponse.status >= 400) return res.redirect(302, finalUrl);
-
-        res.status(videoResponse.status);
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        if (videoResponse.headers['content-type']) res.setHeader("Content-Type", videoResponse.headers['content-type']);
-        if (videoResponse.headers['content-length']) res.setHeader("Content-Length", videoResponse.headers['content-length']);
-        if (videoResponse.headers['content-range']) res.setHeader("Content-Range", videoResponse.headers['content-range']);
-        res.setHeader("Accept-Ranges", "bytes");
-
-        videoResponse.data.pipe(res);
-        req.on('close', () => { if (videoResponse.data) videoResponse.data.destroy(); });
+        // 🔥 SOLUÇÃO PARA VELOCIDADE MÁXIMA E FIM DOS CORTES:
+        // Em vez de usarmos o Render como "túnel" (que causa o atraso e o corte aos 20s),
+        // mandamos a tua TV ligar-se DIRETAMENTE à fonte do vídeo.
+        console.log(`[RAPIDEZ] A enviar link direto para a TV: ${finalUrl}`);
+        return res.redirect(302, finalUrl);
 
     } catch (e) {
         console.error(`[PROXY ERROR] ${e.message}`);
