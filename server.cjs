@@ -256,8 +256,8 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             delete req.headers.range; 
         }
 
-        // Ligar o Render ao IPTV
-        const videoResponse = await axios({
+        // 🌟 NOVIDADE: Configurar o pedido para usar a VPN/Proxy da página de instalação
+        let axiosOptions = {
             method: 'get',
             url: finalUrl,
             headers: requestHeaders,
@@ -265,7 +265,25 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             timeout: 0, // Sem tempo limite
             maxRedirects: 5,
             validateStatus: false
-        });
+        };
+
+        if (configData.proxy && configData.proxy.startsWith('http')) {
+            try {
+                const proxyUrl = new URL(configData.proxy);
+                axiosOptions.proxy = {
+                    protocol: proxyUrl.protocol.replace(':', ''),
+                    host: proxyUrl.hostname,
+                    port: parseInt(proxyUrl.port),
+                    auth: proxyUrl.username ? { username: proxyUrl.username, password: proxyUrl.password } : undefined
+                };
+                console.log(`[VPN ATIVA] A passar tráfego pelo Proxy: ${proxyUrl.hostname}`);
+            } catch (proxyError) {
+                console.error("[PROXY CONFIG ERROR] Proxy inválido:", proxyError.message);
+            }
+        }
+
+        // Ligar o Render ao IPTV (com ou sem Proxy VPN)
+        const videoResponse = await axios(axiosOptions);
 
         if (videoResponse.status >= 400) {
             console.log(`[PROXY ERRO] Servidor rejeitou com ${videoResponse.status}`);
