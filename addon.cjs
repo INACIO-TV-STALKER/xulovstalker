@@ -37,9 +37,23 @@ const getStalkerAuth = function(config, token) {
 };
 
 const addon = {
-    parseConfig(configBase64) {
-        try { return JSON.parse(Buffer.from(configBase64, 'base64').toString()).lists || []; } 
-        catch (e) { return []; }
+        parseConfig(configStr) {
+        if (!configStr) return [];
+        try {
+            let decoded;
+            // Tenta ler o novo formato seguro (Base64) da página de instalação
+            try {
+                decoded = Buffer.from(decodeURIComponent(configStr), 'base64').toString('utf8');
+            } catch (e) {
+                // Se for um link antigo, lê da forma normal
+                decoded = decodeURIComponent(configStr);
+            }
+            const data = JSON.parse(decoded);
+            return data.lists || [];
+        } catch (e) {
+            console.error("Erro ao ler config:", e.message);
+            return [];
+        }
     },
 
     async authenticate(config) {
