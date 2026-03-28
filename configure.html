@@ -1,33 +1,92 @@
 <!DOCTYPE html>
-<html>
+<html lang="pt">
 <head>
   <meta charset="utf-8">
   <title>Stalker IPTV Config</title>
+  <style>
+    body { font-family: sans-serif; background: #1a1a1a; color: white; padding: 20px; max-width: 800px; margin: auto; }
+    h2 { color: #00d1b2; }
+    textarea { width: 100%; background: #222; color: #0f0; border: 1px solid #444; padding: 10px; font-family: monospace; }
+    .vpn-box { 
+        margin-top: 20px; padding: 15px; border: 1px solid #444; border-radius: 8px; background: #252525; 
+    }
+    .vpn-header { display: flex; align-items: center; cursor: pointer; font-weight: bold; margin-bottom: 10px; }
+    .vpn-header input { margin-right: 10px; transform: scale(1.2); }
+    .proxy-input { width: 97%; padding: 10px; background: #111; border: 1px solid #555; color: white; border-radius: 4px; display: none; }
+    button { 
+        background: #00d1b2; color: white; border: none; padding: 15px 30px; font-weight: bold; 
+        border-radius: 5px; cursor: pointer; margin-top: 20px; width: 100%; font-size: 16px;
+    }
+    button:hover { background: #00b399; }
+    small { color: #888; display: block; margin-top: 5px; }
+  </style>
 </head>
 <body>
-  <h2>Adicionar Lista Stalker</h2>
+  <h2>🛡️ Configurar Listas Stalker / Xtream</h2>
 
-  <textarea id="config" rows="15" cols="80">
+  <label>Configuração JSON das Listas:</label>
+  <textarea id="config" rows="12">
 {
   "lists": [
     {
       "name": "Minha Lista",
-      "portalUrl": "http://example.com/stalker_portal",
-      "mac": "00:1A:79:00:00:00"
+      "url": "http://exemplo.com/portal.php",
+      "mac": "00:1A:79:00:00:00",
+      "type": "stalker"
     }
   ]
 }
   </textarea>
 
-  <br><br>
-  <button onclick="install()">Instalar no Stremio</button>
+  <div class="vpn-box">
+    <label class="vpn-header">
+      <input type="checkbox" id="useProxy" onchange="toggleProxy()"> 
+      Ativar Perfil Proxy / VPN para estas listas
+    </label>
+    
+    <div id="proxyArea">
+        <input type="text" id="proxyUrl" class="proxy-input" placeholder="http://usuario:senha@ip:porta">
+        <small>Use isto se o servidor cair aos 20 segundos na TV. Ex: http://meuproxy.com:8080</small>
+    </div>
+  </div>
+
+  <button onclick="install()">🚀 Instalar no Stremio</button>
 
   <script>
+    function toggleProxy() {
+      const isChecked = document.getElementById('useProxy').checked;
+      document.getElementById('proxyUrl').style.display = isChecked ? 'block' : 'none';
+    }
+
     function install() {
-      const cfg = encodeURIComponent(document.getElementById('config').value);
-      const url = `stremio://addon-install?url=${location.origin}/manifest.json?config=${cfg}`;
-      window.location.href = url;
+      try {
+        // 1. Ler o JSON original
+        let configObj = JSON.parse(document.getElementById('config').value);
+        const proxyVal = document.getElementById('proxyUrl').value.trim();
+        const useProxy = document.getElementById('useProxy').checked;
+
+        // 2. Se o Proxy estiver ativo, injetamos em todas as listas do JSON
+        if (useProxy && proxyVal !== "") {
+          configObj.lists.forEach(lista => {
+            lista.proxy = proxyVal;
+          });
+        }
+
+        // 3. Transformar em Base64 (mais seguro para o Render ler caracteres especiais)
+        const configString = JSON.stringify(configObj);
+        const configBase64 = btoa(unescape(encodeURIComponent(configString)));
+
+        // 4. Gerar o link de instalação
+        const url = `stremio://addon-install?url=${location.origin}/manifest.json?config=${configBase64}`;
+        
+        console.log("A instalar com config:", configObj);
+        window.location.href = url;
+
+      } catch (e) {
+        alert("Erro no JSON! Verifica se as vírgulas e aspas estão corretas.\n\nDetalhe: " + e.message);
+      }
     }
   </script>
 </body>
 </html>
+
