@@ -23,129 +23,77 @@ app.use((req, res, next) => {
 // A Nova Página de Configuração - INTOCADA
 app.get("/", (req, res) => res.redirect("/configure"));
 app.get("/configure", (req, res) => {
+    res.setHeader("Content-Type", "text/html");
     res.send(`
-        <!DOCTYPE html>
-        <html><head><title>XuloV Hub Config</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-            body { font-family: sans-serif; background: #0c0d19; color: white; padding: 20px; }
-            .container { max-width: 500px; margin: auto; }
-            .list-box { background: #1b1d30; padding: 20px; border-radius: 12px; margin-bottom: 20px; border-left: 5px solid #007bff; position: relative; }
-            h3 { margin-top: 0; color: #007bff; font-size: 16px; }
-            label { display: block; font-size: 11px; color: #888; margin-top: 8px; font-weight: bold; }
-            input, select { width: 100%; padding: 10px; margin: 4px 0; border-radius: 6px; border: 1px solid #333; background: #222; color: white; box-sizing: border-box; }
-            .remove-btn { position: absolute; top: 10px; right: 10px; color: #ff4444; cursor: pointer; font-size: 12px; font-weight: bold; }
-            .add-btn { background: #28a745; color: white; border: none; padding: 12px; width: 100%; border-radius: 8px; cursor: pointer; font-weight: bold; margin-bottom: 15px; }
-            .install-btn { background: #007bff; color: white; border: none; padding: 18px; width: 100%; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 18px; }
-            .advanced { display: none; background: #141526; padding: 10px; border-radius: 8px; margin-top: 10px; }
-            .adv-toggle { color: #007bff; font-size: 12px; cursor: pointer; text-decoration: underline; margin-top: 5px; display: block; }
-        </style></head>
-        <body>
-            <div class="container">
-                <h2 style="text-align:center">XuloV Multi-Hub (Stalker & Xtream)</h2>
-                <div id="lists-container"></div>
-                <button class="add-btn" onclick="addList()">+ Adicionar Nova Lista (Máx 5)</button>
-                <button class="install-btn" onclick="install()">🚀 INSTALAR NO STREMIO</button>
-            </div>
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>XuloV Multi-Hub Stalker</title>
+    <style>
+        body { font-family: sans-serif; background: #0f0f0f; color: white; padding: 20px; max-width: 600px; margin: auto; }
+        .card { background: #1a1a1a; padding: 20px; border-radius: 10px; border: 1px solid #333; }
+        h2 { color: #00d1b2; text-align: center; }
+        textarea { width: 100%; background: #000; color: #0f0; border: 1px solid #444; padding: 10px; font-family: monospace; box-sizing: border-box; }
+        .vpn-box { margin-top: 20px; padding: 15px; background: #222; border: 1px solid #444; border-radius: 5px; }
+        .vpn-header { display: flex; align-items: center; cursor: pointer; font-weight: bold; color: #00d1b2; }
+        .vpn-header input { margin-right: 10px; transform: scale(1.2); }
+        .proxy-input { width: 100%; padding: 10px; margin-top: 10px; background: #111; border: 1px solid #555; color: white; display: none; box-sizing: border-box; }
+        button { background: #00d1b2; color: black; border: none; padding: 15px; width: 100%; border-radius: 5px; font-weight: bold; cursor: pointer; margin-top: 20px; font-size: 16px; }
+        button:hover { background: #00b399; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>🚀 XuloV Multi-Hub</h2>
+        <p style="font-size: 12px; color: #888;">Edite o JSON abaixo com as suas listas:</p>
+        <textarea id="config" rows="10">
+{
+  "lists": [
+    {
+      "name": "Minha Lista",
+      "url": "http://exemplo.com/portal.php",
+      "mac": "00:1A:79:00:00:00",
+      "type": "stalker"
+    }
+  ]
+}
+        </textarea>
 
-            <script>
-                let listCount = 0;
+        <div class="vpn-box">
+            <label class="vpn-header">
+                <input type="checkbox" id="useProxy" onchange="document.getElementById('proxyUrl').style.display = this.checked ? 'block' : 'none'">
+                🛡️ Ativar Perfil Proxy / VPN
+            </label>
+            <input type="text" id="proxyUrl" class="proxy-input" placeholder="Ex: http://usuario:senha@ip:porta">
+            <p style="font-size: 11px; color: #666; margin-top: 5px;">Use isto apenas se o servidor bloquear o IP do Render ou cair na TV.</p>
+        </div>
 
-                function addList() {
-                    if(listCount >= 5) return alert("Máximo de 5 listas atingido!");
-                    listCount++;
-                    const id = Date.now();
-                    const html = \`
-                        <div class="list-box" id="box-\${id}">
-                            <div class="remove-btn" onclick="removeList(\${id})">REMOVER</div>
-                            <h3>LISTA #\${listCount}</h3>
+        <button onclick="install()">INSTALAR NO STREMIO</button>
+    </div>
 
-                            <label>TIPO DE LISTA</label>
-                            <select class="type" onchange="toggleType(this, \${id})">
-                                <option value="stalker">Stalker Portal (MAC)</option>
-                                <option value="xtream">Xtream Codes (User/Pass)</option>
-                            </select>
+    <script>
+        function install() {
+            try {
+                let configObj = JSON.parse(document.getElementById('config').value);
+                const useProxy = document.getElementById('useProxy').checked;
+                const proxyVal = document.getElementById('proxyUrl').value.trim();
 
-                            <label>NOME DA LISTA</label>
-                            <input type="text" class="name" placeholder="Ex: IPTV Portugal">
-                            <label>URL PORTAL / SERVIDOR</label>
-                            <input type="text" class="url" placeholder="http://portal.com:8080/c/">
-
-                            <div id="stalker-group-\${id}">
-                                <label>MAC ADDRESS</label>
-                                <input type="text" class="mac" placeholder="00:1A:79:XX:XX:XX">
-                                <label>BOX MODEL</label>
-                                <select class="model">
-                                    <option value="MAG250">MAG 250</option>
-                                    <option value="MAG254">MAG 254</option>
-                                    <option value="MAG256">MAG 256</option>
-                                    <option value="MAG322">MAG 322</option>
-                                </select>
-                                <span class="adv-toggle" onclick="toggleAdv(\${id})">Configurações Avançadas</span>
-                                <div class="advanced" id="adv-\${id}">
-                                    <label>SERIAL NUMBER (SN)</label><input type="text" class="sn">
-                                    <label>DEVICE ID 1</label><input type="text" class="id1">
-                                    <label>DEVICE ID 2</label><input type="text" class="id2">
-                                    <label>SIGNATURE</label><input type="text" class="sig">
-                                </div>
-                            </div>
-
-                            <div id="xtream-group-\${id}" style="display:none;">
-                                <label>USERNAME</label>
-                                <input type="text" class="user" placeholder="O teu utilizador Xtream">
-                                <label>PASSWORD</label>
-                                <input type="text" class="pass" placeholder="A tua password Xtream">
-                            </div>
-                        </div>\`;
-                    document.getElementById('lists-container').insertAdjacentHTML('beforeend', html);
+                // Se o proxy estiver ativo, injeta-o em todas as listas
+                if (useProxy && proxyVal !== "") {
+                    configObj.lists.forEach(l => { l.proxy = proxyVal; });
                 }
 
-                function removeList(id) {
-                    document.getElementById('box-'+id).remove();
-                    listCount--;
-                }
-
-                function toggleType(selectEl, id) {
-                    if (selectEl.value === 'xtream') {
-                        document.getElementById('stalker-group-'+id).style.display = 'none';
-                        document.getElementById('xtream-group-'+id).style.display = 'block';
-                    } else {
-                        document.getElementById('stalker-group-'+id).style.display = 'block';
-                        document.getElementById('xtream-group-'+id).style.display = 'none';
-                    }
-                }
-
-                function toggleAdv(id) {
-                    const el = document.getElementById('adv-'+id);
-                    el.style.display = el.style.display === 'block' ? 'none' : 'block';
-                }
-
-                function install() {
-                    const boxes = document.querySelectorAll('.list-box');
-                    if(boxes.length === 0) return alert("Adiciona pelo menos uma lista!");
-
-                    const lists = Array.from(boxes).map(box => ({
-                        type: box.querySelector('.type').value,
-                        name: box.querySelector('.name').value.trim(),
-                        url: box.querySelector('.url').value.trim(),
-                        mac: box.querySelector('.mac').value.trim(),
-                        model: box.querySelector('.model').value,
-                        sn: box.querySelector('.sn').value.trim(),
-                        id1: box.querySelector('.id1').value.trim(),
-                        id2: box.querySelector('.id2').value.trim(),
-                        sig: box.querySelector('.sig').value.trim(),
-                        user: box.querySelector('.user').value.trim(),
-                        pass: box.querySelector('.pass').value.trim()
-                    }));
-
-                    const config = { lists };
-                    const b64 = btoa(JSON.stringify(config));
-                    window.location.href = "stremio://" + window.location.host + "/" + b64 + "/manifest.json";
-                }
-
-                addList();
-            </script>
-        </body></html>
+                // Codifica em Base64 para o Stremio aceitar caracteres especiais (@, :, /)
+                const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(configObj))));
+                window.location.href = "stremio://addon-install?url=" + window.location.origin + "/manifest.json?config=" + b64;
+            } catch(e) {
+                alert("Erro no JSON: " + e.message);
+            }
+        }
+    </script>
+</body>
+</html>
     `);
 });
 
