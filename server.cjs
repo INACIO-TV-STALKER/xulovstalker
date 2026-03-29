@@ -182,20 +182,13 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const configData = lists[listIdx];
     if (!configData) return res.status(400).end();
 
-    // 💡 LISTA NEGRA: Servidores que cortam aos 30 segundos (TV ou Filmes)
-    const servidoresComBloqueio = [ 
-        'luzentreaoceanos', 
-        'p1d5753'
-    ];
-
-    // Verifica se este servidor atual precisa de tratamento especial
+    const servidoresComBloqueio = ['luzentreaoceanos', 'p1d5753'];
     const precisaDeProxy = servidoresComBloqueio.some(s => configData.url.toLowerCase().includes(s));
 
     try {
         let finalUrl = "";
         let requestHeaders = { 
             'User-Agent': 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 27211 Safari/533.3',
-            // NOVIDADE: Se for servidor da lista negra, usamos 'close' MESMO NA TV para evitar a queda
             'Connection': precisaDeProxy ? 'close' : 'keep-alive' 
         };
 
@@ -206,8 +199,7 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
                        type === 'movie' ? `${baseUrl}/movie/${configData.user}/${configData.pass}/${channelId}` :
                        `${baseUrl}/series/${configData.user}/${configData.pass}/${channelId}`;
             return res.redirect(302, finalUrl);
-        } 
-        else {
+        } else {
             const auth = await addon.authenticate(configData);
             if (!auth) return res.status(401).end();
 
@@ -230,9 +222,8 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
             let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
 
             if (typeof streamUrl === 'string') {
-                // 🔥 CORREÇÃO: Limpeza do link (remove o 'ffmpeg ' e garante que o url fica limpo)
+                // 🔥 MANTIDA A CORREÇÃO DO FFMPEG
                 let cleanUrl = streamUrl.trim().replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-
                 if (cleanUrl.includes('http://localhost/ch/')) {
                     const parts = cleanUrl.split('http://localhost/ch/');
                     finalUrl = parts[0].replace(/ffmpeg\s*$/, "").trim() + '/' + parts[1].trim();
@@ -242,31 +233,29 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
                     const baseServer = configData.url.replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
                     finalUrl = baseServer.replace(/\/$/, "") + (cleanUrl.startsWith('/') ? cleanUrl : '/' + cleanUrl);
                 }
-                
                 finalUrl = finalUrl.trim();
             }
         }
 
         if (!finalUrl) return res.status(404).end();
 
-        console.log(`[PROXY ATIVO] A mascarar IP para TV ao Vivo: ${finalUrl}`);
-
-        // O SEGREDO: Remover os pedidos "aos bocados" da TV que fazem o servidor cortar
+        // 🔥 MANTIDA A CORREÇÃO DA TV (RANGE)
         if (req.headers.range && type !== 'movie' && type !== 'series') {
             delete req.headers.range; 
         }
 
-        // 🌟 NOVIDADE: Configurar o pedido para usar a VPN/Proxy da página de instalação
+        // PREPARAR PEDIDO AXIOS COM SUPORTE A PROXY/VPN
         let axiosOptions = {
             method: 'get',
             url: finalUrl,
             headers: requestHeaders,
             responseType: 'stream',
-            timeout: 0, // Sem tempo limite
+            timeout: 0,
             maxRedirects: 5,
             validateStatus: false
         };
 
+        // SE O UTILIZADOR DEFINIU UM PROXY NO HTML, O SERVER USA-O AQUI
         if (configData.proxy && configData.proxy.startsWith('http')) {
             try {
                 const proxyUrl = new URL(configData.proxy);
@@ -276,37 +265,25 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
                     port: parseInt(proxyUrl.port),
                     auth: proxyUrl.username ? { username: proxyUrl.username, password: proxyUrl.password } : undefined
                 };
-                console.log(`[VPN ATIVA] A passar tráfego pelo Proxy: ${proxyUrl.hostname}`);
-            } catch (proxyError) {
-                console.error("[PROXY CONFIG ERROR] Proxy inválido:", proxyError.message);
-            }
+            } catch (e) { console.error("Erro no Proxy:", e.message); }
         }
 
-        // Ligar o Render ao IPTV (com ou sem Proxy VPN)
         const videoResponse = await axios(axiosOptions);
 
-        if (videoResponse.status >= 400) {
-            console.log(`[PROXY ERRO] Servidor rejeitou com ${videoResponse.status}`);
-            return res.status(videoResponse.status).end();
-        }
-
-        // Passar a emissão do Render para a TV
         res.status(200);
         res.setHeader("Access-Control-Allow-Origin", "*");
         if (videoResponse.headers['content-type']) res.setHeader("Content-Type", videoResponse.headers['content-type']);
 
         videoResponse.data.pipe(res);
 
-        // Fechar se mudares de canal
         req.on('close', () => { 
-            console.log("[PROXY] Canal fechado. A limpar ligação.");
             if (videoResponse.data) videoResponse.data.destroy(); 
         });
 
     } catch (e) {
-        console.error(`[PROXY ERROR FATAL] ${e.message}`);
         if (!res.headersSent) res.status(500).end();
     }
 });
 
-app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Tizen Addon Online na porta ${PORT}`));
+app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Addon Online na porta ${PORT}`));
+
