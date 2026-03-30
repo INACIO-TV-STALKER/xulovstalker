@@ -145,8 +145,7 @@ app.get("/configure", (req, res) => {
                     const el = document.getElementById('adv-'+id);
                     el.style.display = el.style.display === 'block' ? 'none' : 'block';
                 }
-
-                                function install() {
+                function install() {
                     const boxes = document.querySelectorAll('.list-box');
                     if(boxes.length === 0) return alert("Adiciona pelo menos uma lista!");
 
@@ -154,10 +153,10 @@ app.get("/configure", (req, res) => {
                         const lists = Array.from(boxes).map(box => {
                             const type = box.querySelector('.type').value;
                             
-                            // 1. Criar a estrutura com TODOS os campos que o servidor espera (padrão profissional)
+                            // 1. Criar o objeto com TODOS os campos (evita que o servidor dê erro de 'undefined')
                             let item = {
                                 type: type,
-                                name: box.querySelector('.name').value.trim(),
+                                name: box.querySelector('.name').value.trim() || "IPTV",
                                 url: box.querySelector('.url').value.trim(),
                                 mac: "",
                                 model: "MAG250",
@@ -170,7 +169,7 @@ app.get("/configure", (req, res) => {
                                 proxy: ""
                             };
 
-                            // 2. Preencher apenas o que foi inserido conforme o tipo
+                            // 2. Preencher os dados específicos conforme o tipo
                             if (type === 'stalker') {
                                 item.mac = box.querySelector('.mac').value.trim();
                                 item.model = box.querySelector('.model').value;
@@ -181,7 +180,9 @@ app.get("/configure", (req, res) => {
                                 
                                 const pCheck = box.querySelector('.use-proxy');
                                 if (pCheck && pCheck.checked) {
-                                    item.proxy = box.querySelector('.proxy-url').value.trim();
+                                    let pUrl = box.querySelector('.proxy-url').value.trim();
+                                    // Proteção profissional: garante que o proxy tem o protocolo http
+                                    item.proxy = pUrl.startsWith('http') ? pUrl : 'http://' + pUrl;
                                 }
                             } else {
                                 item.user = box.querySelector('.user').value.trim();
@@ -189,29 +190,29 @@ app.get("/configure", (req, res) => {
                                 
                                 const pCheckXt = box.querySelector('.use-proxy-xtream');
                                 if (pCheckXt && pCheckXt.checked) {
-                                    item.proxy = box.querySelector('.proxy-url-xtream').value.trim();
+                                    let pUrlXt = box.querySelector('.proxy-url-xtream').value.trim();
+                                    item.proxy = pUrlXt.startsWith('http') ? pUrlXt : 'http://' + pUrlXt;
                                 }
                             }
                             return item;
                         });
 
+                        // 3. Gerar o JSON e converter para Base64 de forma segura (suporta acentos)
                         const config = { lists };
-                        
-                        // 3. Gerar o link Base64 com proteção contra caracteres especiais
                         const jsonStr = JSON.stringify(config);
                         const b64 = btoa(unescape(encodeURIComponent(jsonStr)));
                         
-                        // 4. Encode final para o Stremio não "cortar" o link nas barras ou símbolos
-                        const finalUrl = "stremio://" + window.location.host + "/" + encodeURIComponent(b64) + "/manifest.json";
+                        // 4. Encode final da URL para que o Stremio não "parta" o link em caracteres especiais
+                        const urlSafeB64 = encodeURIComponent(b64);
                         
-                        window.location.href = finalUrl;
+                        window.location.href = "stremio://" + window.location.host + "/" + urlSafeB64 + "/manifest.json";
 
                     } catch (err) {
-                        console.error("Erro na instalação:", err);
-                        alert("Erro técnico ao gerar o link. Verifica os dados.");
+                        console.error("Erro crítico na instalação:", err);
+                        alert("Erro ao gerar a configuração. Verifica se os campos obrigatórios estão preenchidos.");
                     }
                 }
-
+                              
                 addList();
             </script>
         </body></html>
