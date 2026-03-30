@@ -145,69 +145,45 @@ app.get("/configure", (req, res) => {
                     const el = document.getElementById('adv-'+id);
                     el.style.display = el.style.display === 'block' ? 'none' : 'block';
                 }
-                function install() {
+                                function install() {
                     const boxes = document.querySelectorAll('.list-box');
                     if(boxes.length === 0) return alert("Adiciona pelo menos uma lista!");
 
-                    try {
-                        const lists = Array.from(boxes).map(box => {
-                            const type = box.querySelector('.type').value;
-                            
-                            // 1. Criar o objeto com TODOS os campos (evita que o servidor dê erro de 'undefined')
-                            let item = {
-                                type: type,
-                                name: box.querySelector('.name').value.trim() || "IPTV",
-                                url: box.querySelector('.url').value.trim(),
-                                mac: "",
-                                model: "MAG250",
-                                sn: "",
-                                id1: "",
-                                id2: "",
-                                sig: "",
-                                user: "",
-                                pass: "",
-                                proxy: ""
-                            };
-
-                            // 2. Preencher os dados específicos conforme o tipo
-                            if (type === 'stalker') {
-                                item.mac = box.querySelector('.mac').value.trim();
-                                item.model = box.querySelector('.model').value;
-                                item.sn = box.querySelector('.sn').value.trim();
-                                item.id1 = box.querySelector('.id1').value.trim();
-                                item.id2 = box.querySelector('.id2').value.trim();
-                                item.sig = box.querySelector('.sig').value.trim();
-                                
-                                const pCheck = box.querySelector('.use-proxy');
-                                if (pCheck && pCheck.checked) {
-                                    let pUrl = box.querySelector('.proxy-url').value.trim();
-                                    // Proteção profissional: garante que o proxy tem o protocolo http
-                                    item.proxy = pUrl.startsWith('http') ? pUrl : 'http://' + pUrl;
-                                }
-                            } else {
-                                item.user = box.querySelector('.user').value.trim();
-                                item.pass = box.querySelector('.pass').value.trim();
-                                
-                                const pCheckXt = box.querySelector('.use-proxy-xtream');
-                                if (pCheckXt && pCheckXt.checked) {
-                                    let pUrlXt = box.querySelector('.proxy-url-xtream').value.trim();
-                                    item.proxy = pUrlXt.startsWith('http') ? pUrlXt : 'http://' + pUrlXt;
-                                }
-                            }
-                            return item;
-                        });
-
-                        // 3. Gerar o JSON e converter para Base64 de forma segura (suporta acentos)
-                        const config = { lists };
-                        const jsonStr = JSON.stringify(config);
-                        const b64 = btoa(unescape(encodeURIComponent(jsonStr)));
+                    const lists = Array.from(boxes).map(box => {
+                        const type = box.querySelector('.type').value;
+                        let pVal = "";
                         
-                        // 4. Encode final da URL para que o Stremio não "parta" o link em caracteres especiais
-                        const urlSafeB64 = encodeURIComponent(b64);
-                        
-                        window.location.href = "stremio://" + window.location.host + "/" + urlSafeB64 + "/manifest.json";
+                        if (type === 'stalker') {
+                            const ck = box.querySelector('.use-proxy');
+                            if(ck && ck.checked) pVal = box.querySelector('.proxy-url').value.trim();
+                        } else {
+                            const ckX = box.querySelector('.use-proxy-xtream');
+                            if(ckX && ckX.checked) pVal = box.querySelector('.proxy-url-xtream').value.trim();
+                        }
 
-                    } catch (err) {
+                        return {
+                            type: type,
+                            name: box.querySelector('.name').value.trim() || "IPTV",
+                            url: box.querySelector('.url').value.trim(),
+                            mac: box.querySelector('.mac')?.value.trim() || "",
+                            model: box.querySelector('.model')?.value || "MAG250",
+                            sn: box.querySelector('.sn')?.value.trim() || "",
+                            id1: box.querySelector('.id1')?.value.trim() || "",
+                            id2: box.querySelector('.id2')?.value.trim() || "",
+                            sig: box.querySelector('.sig')?.value.trim() || "",
+                            user: box.querySelector('.user')?.value.trim() || "",
+                            pass: box.querySelector('.pass')?.value.trim() || "",
+                            proxy: pVal
+                        };
+                    });
+
+                    // Enviamos o objeto que o teu addon.parseConfig espera
+                    const config = { lists: lists };
+                    const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(config))));
+                    
+                    window.location.href = "stremio://" + window.location.host + "/" + encodeURIComponent(b64) + "/manifest.json";
+                }
+ catch (err) {
                         console.error("Erro crítico na instalação:", err);
                         alert("Erro ao gerar a configuração. Verifica se os campos obrigatórios estão preenchidos.");
                     }
