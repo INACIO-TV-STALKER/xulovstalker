@@ -1,4 +1,5 @@
 const axios = require("axios");
+const crypto = require("crypto");
 
 const memCache = {};
 function getCache(key) {
@@ -38,11 +39,12 @@ const getStalkerAuth = function(config, token) {
 
 const addon = {
     parseConfig(configBase64) {
-        try { return JSON.parse(Buffer.from(configBase64, 'base64').toString()).lists || []; } 
+        try { 
+            return JSON.parse(Buffer.from(configBase64, 'base64').toString()).lists || []; 
+        } 
         catch (e) { return []; }
     },
 
-    // 🔥 CORREÇÃO: handshake igual ao original + get_profile OPCIONAL (não quebra nada)
     async authenticate(config) {
         if (config.type === 'xtream') return true;
 
@@ -56,20 +58,17 @@ const addon = {
         const api = baseUrl + "portal.php?";
 
         try {
-            // 1. Handshake (igual ao teu código original)
             const hUrl = api + `type=stb&action=handshake&sn=\( {authData.sn}&device_id= \){authData.id1}&JsHttpRequest=1-0`;
             const res = await axios.get(hUrl, { headers: authData.headers, timeout: 6000 });
             const token = res.data?.js?.token || res.data?.token || null;
             if (!token) return null;
 
-            // 2. Get Profile → opcional (não falha o login se o servidor não suportar)
             try {
                 const profileHeaders = getStalkerAuth(config, token).headers;
                 await axios.get(api + `type=stb&action=get_profile&token=${token}&JsHttpRequest=1-0`, {
                     headers: profileHeaders, timeout: 6000
                 });
             } catch (profileErr) {
-                // Normal em muitos portais → continuamos com o token
                 console.log(`[AUTH] get_profile não suportado (normal): ${profileErr.message}`);
             }
 
@@ -84,12 +83,17 @@ const addon = {
 
     async getManifest(configBase64) {
         const cacheKey = `manifest_${configBase64}`;
-        const cached = getCache(cacheKey); if (cached) return cached;
+        const cached = getCache(cacheKey); 
+        if (cached) return cached;
 
         const lists = this.parseConfig(configBase64);
         let catalogs = [];
+
         await Promise.all(lists.map(async (l, i) => {
-            let tvG = ["Predefinido"]; let movG = ["Predefinido"]; let serG = ["Predefinido"];
+            let tvG = ["Predefinido"]; 
+            let movG = ["Predefinido"]; 
+            let serG = ["Predefinido"];
+
             try {
                 if (l.type === 'xtream') {
                     const b = l.url.trim().replace(/\/$/, "");
@@ -106,34 +110,71 @@ const addon = {
                     const auth = await addon.authenticate(l);
                     if (auth) {
                         const fetchSt = async (t, a) => {
-                            const r = await axios.get(`\( {auth.api}type= \){t}&action=\( {a}&sn= \){auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, { headers: auth.authData.headers, timeout: 5000 });
+                            const r = await axios.get(`\( {auth.api}type= \){t}&action=\( {a}&sn= \){auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, 
+                                { headers: auth.authData.headers, timeout: 5000 });
                             const items = r.data?.js?.data || r.data?.js || [];
-                            return (Array.isArray(items) ? items : Object.values(items)).map(g => g.title || g.name).filter(Boolean);
+                            return (Array.isArray(items) ? items : Object.values(items))
+                                .map(g => g.title || g.name)
+                                .filter(Boolean);
                         };
-                        const [g1, g2, g3] = await Promise.all([fetchSt('itv', 'get_genres'), fetchSt('vod', 'get_categories'), fetchSt('series', 'get_categories')]);
+                        const [g1, g2, g3] = await Promise.all([
+                            fetchSt('itv', 'get_genres'), 
+                            fetchSt('vod', 'get_categories'), 
+                            fetchSt('series', 'get_categories')
+                        ]);
                         tvG = [...new Set(tvG.concat(g1))];
                         movG = [...new Set(movG.concat(g2))];
                         serG = [...new Set(serG.concat(g3))];
                     }
                 }
-            } catch(e) { console.error(`[MANIFEST ERROR] Falha ao carregar lista ${i}:`, e.message); }
+            } catch(e) { 
+                console.error(`[MANIFEST ERROR] Falha ao carregar lista ${i}:`, e.message); 
+            }
             
-            catalogs.push({ type: "tv", id: `cat_${i}`, name: l.name || `Lista ${i+1}`, extra: [{ name: "genre", options: tvG }, { name: "skip" }] });
-            catalogs.push({ type: "movie", id: `mov_\( {i}`, name: ` \){l.name || `Lista ${i+1}`} 🎬`, extra: [{ name: "genre", options: movG }, { name: "skip" }] });
-            catalogs.push({ type: "series", id: `ser_\( {i}`, name: ` \){l.name || `Lista ${i+1}`} 🍿`, extra: [{ name: "genre", options: serG }, { name: "skip" }] });
+            catalogs.push({ 
+                type: "tv", 
+                id: `cat_${i}`, 
+                name: l.name || `Lista ${i+1}`, 
+                extra: [{ name: "genre", options: tvG }, { name: "skip" }] 
+            });
+            catalogs.push({ 
+                type: "movie", 
+                id: `mov_${i}`, 
+                name: `${l.name || `Lista ${i+1}`} 🎬`, 
+                extra: [{ name: "genre", options: movG }, { name: "skip" }] 
+            });
+            catalogs.push({ 
+                type: "series", 
+                id: `ser_${i}`, 
+                name: `${l.name || `Lista ${i+1}`} 🍿`, 
+                extra: [{ name: "genre", options: serG }, { name: "skip" }] 
+            });
         }));
+
         const addonName = lists.map(l => l.name).filter(Boolean).join(" + ") || "XuloV Hub";
-        const m = { id: "org.xulov.stalker", version: "5.2.1", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
-        setCache(cacheKey, m, 60); return m;
+        const m = { 
+            id: "org.xulov.stalker", 
+            version: "5.2.1", 
+            name: addonName, 
+            resources: ["catalog", "stream", "meta"], 
+            types: ["tv", "movie", "series"], 
+            idPrefixes: ["xlv:"], 
+            catalogs: catalogs 
+        };
+
+        setCache(cacheKey, m, 60); 
+        return m;
     },
 
-    // 🔥 getCatalog EXATAMENTE igual ao teu código original (não mexi em nada)
     async getCatalog(type, id, extra, configBase64) {
         const lists = this.parseConfig(configBase64);
         const lIdx = parseInt(id.split('_')[1]);
-        const config = lists[lIdx]; if (!config) return { metas: [] };
+        const config = lists[lIdx]; 
+        if (!config) return { metas: [] };
+
         const skip = parseInt(extra.skip) || 0;
         let metas = [];
+
         try {
             if (config.type === 'xtream') {
                 const b = config.url.trim().replace(/\/$/, "");
@@ -148,7 +189,10 @@ const addon = {
                 const res = await axios.get(`\( {api}&action= \){act}`, {timeout: 10000});
                 metas = (Array.isArray(res.data) ? res.data : []).slice(skip, skip + 100).map(item => ({
                     id: `xlv:\( {lIdx}: \){item.stream_id || item.series_id}\( {type === 'movie' ? '.' + (item.container_extension || 'mp4') : ''}: \){encodeURIComponent(item.name || item.title)}`,
-                    name: item.name || item.title, type: type, poster: item.stream_icon || item.cover, posterShape: type === "tv" ? "landscape" : "poster"
+                    name: item.name || item.title, 
+                    type: type, 
+                    poster: item.stream_icon || item.cover, 
+                    posterShape: type === "tv" ? "landscape" : "poster"
                 }));
             } else {
                 const auth = await addon.authenticate(config);
@@ -157,9 +201,11 @@ const addon = {
                     let catP = "";
                     if (extra.genre && extra.genre !== "Predefinido") {
                         const cAct = sType === "itv" ? "get_genres" : "get_categories";
-                        const cRes = await axios.get(`\( {auth.api}type= \){sType}&action=\( {cAct}&sn= \){auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, { headers: auth.authData.headers, timeout: 4000 });
+                        const cRes = await axios.get(`\( {auth.api}type= \){sType}&action=\( {cAct}&sn= \){auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, 
+                            { headers: auth.authData.headers, timeout: 4000 });
                         const cats = cRes.data?.js?.data || cRes.data?.js || [];
-                        const cat = (Array.isArray(cats) ? cats : Object.values(cats)).find(c => (c.title || c.name) === extra.genre);
+                        const cat = (Array.isArray(cats) ? cats : Object.values(cats))
+                            .find(c => (c.title || c.name) === extra.genre);
                         if (cat) catP = sType === "itv" ? `&genre=\( {cat.id}` : `&category= \){cat.id}`;
                     }
 
@@ -174,26 +220,36 @@ const addon = {
                     const url = `\( {auth.api}type= \){sType}&action=\( {sAct} \){catP}&p=\( {page}&sn= \){auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                     const res = await axios.get(url, { headers: auth.authData.headers, timeout: 10000 });
                     const raw = res.data?.js?.data || res.data?.js || [];
-                    metas = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => ({
-                        id: `xlv:\( {lIdx}: \){encodeURIComponent(m.cmd || m.id)}:${encodeURIComponent(m.name || m.title)}`,
-                        name: m.name || m.title, type: type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
-                    }));
+                    metas = (Array.isArray(raw) ? raw : Object.values(raw))
+                        .filter(i => i && (i.id || i.cmd))
+                        .map(m => ({
+                            id: `xlv:\( {lIdx}: \){encodeURIComponent(m.cmd || m.id)}:${encodeURIComponent(m.name || m.title)}`,
+                            name: m.name || m.title, 
+                            type: type, 
+                            poster: m.logo || m.screenshot_uri, 
+                            posterShape: type === "tv" ? "landscape" : "poster"
+                        }));
                 }
             }
-        } catch (e) { console.error("[CATALOG ERROR]", e.message); }
+        } catch (e) { 
+            console.error("[CATALOG ERROR]", e.message); 
+        }
         return { metas };
     },
 
     async getMeta(type, id, configBase64) {
-        const parts = id.split(":"); const name = decodeURIComponent(parts[3] || "Conteúdo");
+        const parts = id.split(":"); 
+        const name = decodeURIComponent(parts[3] || "Conteúdo");
         const meta = { id, type, name, posterShape: type === "tv" ? "landscape" : "poster" };
         return { meta };
     },
 
     async getStreams(type, id, configBase64, host) {
-        // EXATAMENTE o teu código original (não mexi)
-        const parts = id.split(":"); const lIdx = parseInt(parts[1]); const sId = parts[2];
-        const lists = this.parseConfig(configBase64); const config = lists[lIdx];
+        const parts = id.split(":"); 
+        const lIdx = parseInt(parts[1]); 
+        const sId = parts[2];
+        const lists = this.parseConfig(configBase64); 
+        const config = lists[lIdx];
         const pUrl = `https://\( {host}/proxy/ \){encodeURIComponent(configBase64)}/\( {lIdx}/ \){encodeURIComponent(sId)}?type=${type}`;
 
         if (type === 'movie' || type === 'series') {
@@ -202,23 +258,29 @@ const addon = {
 
         if (config?.type === 'xtream') {
             const b = config.url.trim().replace(/\/$/, "");
-            return { streams: [{ url: `\( {b}/ \){config.user}/\( {config.pass}/ \){sId}`, title: `📺 Directo`, behaviorHints: { notWebReady: true } }, { url: pUrl, title: `🛡️ Proxy`, behaviorHints: { notWebReady: true } }] };
+            return { streams: [
+                { url: `\( {b}/ \){config.user}/\( {config.pass}/ \){sId}`, title: `📺 Directo`, behaviorHints: { notWebReady: true } }, 
+                { url: pUrl, title: `🛡️ Proxy`, behaviorHints: { notWebReady: true } }
+            ]};
         }
 
         let streams = [];
         try {
             const auth = await addon.authenticate(config);
             if (auth) {
-                const cmdType = "itv";
-                const linkUrl = `\( {auth.api}type= \){cmdType}&action=create_link&cmd=\( {encodeURIComponent(decodeURIComponent(sId))}&sn= \){auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                const linkUrl = `\( {auth.api}type=itv&action=create_link&cmd= \){encodeURIComponent(decodeURIComponent(sId))}&sn=\( {auth.authData.sn}&token= \){auth.token}&JsHttpRequest=1-0`;
                 const res = await axios.get(linkUrl, { headers: auth.authData.headers, timeout: 5000 });
                 let cmdUrl = res.data?.js?.cmd || res.data?.js;
                 if (typeof cmdUrl === 'string') {
                     let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-                    if (cleanUrl.startsWith('http')) streams.push({ url: cleanUrl, title: `⚡ Directo TV`, behaviorHints: { notWebReady: true } });
+                    if (cleanUrl.startsWith('http')) {
+                        streams.push({ url: cleanUrl, title: `⚡ Directo TV`, behaviorHints: { notWebReady: true } });
+                    }
                 }
             }
-        } catch(e) { console.error("[STREAM ERROR]", e.message); }
+        } catch(e) { 
+            console.error("[STREAM ERROR]", e.message); 
+        }
 
         streams.push({ url: pUrl, title: `🔄 Proxy Estável`, behaviorHints: { notWebReady: true } });
         return { streams };
