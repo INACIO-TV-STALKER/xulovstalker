@@ -146,20 +146,32 @@ app.get("/configure", (req, res) => {
                     el.style.display = el.style.display === 'block' ? 'none' : 'block';
                 }
 
-                function install() {
+                                function install() {
                     const boxes = document.querySelectorAll('.list-box');
                     if(boxes.length === 0) return alert("Adiciona pelo menos uma lista!");
 
                     try {
                         const lists = Array.from(boxes).map(box => {
                             const type = box.querySelector('.type').value;
+                            
+                            // 1. Criar a estrutura com TODOS os campos que o servidor espera (padrão profissional)
                             let item = {
                                 type: type,
                                 name: box.querySelector('.name').value.trim(),
-                                url: box.querySelector('.url').value.trim()
+                                url: box.querySelector('.url').value.trim(),
+                                mac: "",
+                                model: "MAG250",
+                                sn: "",
+                                id1: "",
+                                id2: "",
+                                sig: "",
+                                user: "",
+                                pass: "",
+                                proxy: ""
                             };
 
-                            if(type === 'stalker') {
+                            // 2. Preencher apenas o que foi inserido conforme o tipo
+                            if (type === 'stalker') {
                                 item.mac = box.querySelector('.mac').value.trim();
                                 item.model = box.querySelector('.model').value;
                                 item.sn = box.querySelector('.sn').value.trim();
@@ -168,7 +180,7 @@ app.get("/configure", (req, res) => {
                                 item.sig = box.querySelector('.sig').value.trim();
                                 
                                 const pCheck = box.querySelector('.use-proxy');
-                                if(pCheck && pCheck.checked) {
+                                if (pCheck && pCheck.checked) {
                                     item.proxy = box.querySelector('.proxy-url').value.trim();
                                 }
                             } else {
@@ -176,31 +188,27 @@ app.get("/configure", (req, res) => {
                                 item.pass = box.querySelector('.pass').value.trim();
                                 
                                 const pCheckXt = box.querySelector('.use-proxy-xtream');
-                                if(pCheckXt && pCheckXt.checked) {
+                                if (pCheckXt && pCheckXt.checked) {
                                     item.proxy = box.querySelector('.proxy-url-xtream').value.trim();
                                 }
                             }
-
-                            // A DIETA: Apaga tudo o que estiver vazio para o link não ficar gigante
-                            Object.keys(item).forEach(key => {
-                                if (item[key] === "" || item[key] === null) delete item[key];
-                            });
-
                             return item;
                         });
 
                         const config = { lists };
+                        
+                        // 3. Gerar o link Base64 com proteção contra caracteres especiais
                         const jsonStr = JSON.stringify(config);
                         const b64 = btoa(unescape(encodeURIComponent(jsonStr)));
                         
-                        // A PROTEÇÃO: Transforma os caracteres perigosos do Base64 em link seguro
-                        const urlSafeB64 = encodeURIComponent(b64);
+                        // 4. Encode final para o Stremio não "cortar" o link nas barras ou símbolos
+                        const finalUrl = "stremio://" + window.location.host + "/" + encodeURIComponent(b64) + "/manifest.json";
                         
-                        window.location.href = "stremio://" + window.location.host + "/" + urlSafeB64 + "/manifest.json";
+                        window.location.href = finalUrl;
 
                     } catch (err) {
-                        console.error(err);
-                        alert("Erro ao gerar a instalação. Verifica se não tens caracteres estranhos.");
+                        console.error("Erro na instalação:", err);
+                        alert("Erro técnico ao gerar o link. Verifica os dados.");
                     }
                 }
 
