@@ -42,7 +42,7 @@ app.get("/configure", (req, res) => {
             
             /* Novo estilo para o Proxy */
             .proxy-section { margin-top: 10px; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 8px; border: 1px solid #333; }
-            .proxy-toggle { display: flex; align-items: center; cursor: pointer; font-size: 12px; color: #00d1b2; }
+            .proxy-toggle { display: flex; align-items: center; cursor: pointer; font-size: 12px; color: #00d1b2; font-weight: bold; }
             .proxy-toggle input { width: 16px; height: 16px; margin-right: 8px; cursor: pointer; }
         </style></head>
         <body>
@@ -59,14 +59,15 @@ app.get("/configure", (req, res) => {
                 function addList() {
                     if(listCount >= 5) return alert("Máximo de 5 listas atingido!");
                     listCount++;
-                    const id = Date.now();
+                    // Usar um ID aleatório mais seguro para evitar conflitos
+                    const id = Date.now() + Math.floor(Math.random() * 1000);
                     const html = \`
                         <div class="list-box" id="box-\${id}">
-                            <div class="remove-btn" onclick="removeList(\${id})">REMOVER</div>
+                            <div class="remove-btn" onclick="removeList('\${id}')">REMOVER</div>
                             <h3>LISTA #\${listCount}</h3>
 
                             <label>TIPO DE LISTA</label>
-                            <select class="type" onchange="toggleType(this, \${id})">
+                            <select class="type" onchange="toggleType(this, '\${id}')">
                                 <option value="stalker">Stalker Portal (MAC)</option>
                                 <option value="xtream">Xtream Codes (User/Pass)</option>
                             </select>
@@ -98,7 +99,7 @@ app.get("/configure", (req, res) => {
                                     </div>
                                 </div>
 
-                                <span class="adv-toggle" onclick="toggleAdv(\${id})">Configurações Avançadas</span>
+                                <span class="adv-toggle" onclick="toggleAdv('\${id}')">Configurações Avançadas</span>
                                 <div class="advanced" id="adv-\${id}">
                                     <label>SERIAL NUMBER (SN)</label><input type="text" class="sn">
                                     <label>DEVICE ID 1</label><input type="text" class="id1">
@@ -129,7 +130,6 @@ app.get("/configure", (req, res) => {
 
                 function removeList(id) {
                     document.getElementById('box-'+id).remove();
-                    listCount--;
                 }
 
                 function toggleType(selectEl, id) {
@@ -151,40 +151,58 @@ app.get("/configure", (req, res) => {
                     const boxes = document.querySelectorAll('.list-box');
                     if(boxes.length === 0) return alert("Adiciona pelo menos uma lista!");
 
-                    const lists = Array.from(boxes).map(box => {
-                        const type = box.querySelector('.type').value;
-                        let proxy = "";
+                    try {
+                        const lists = Array.from(boxes).map(box => {
+                            const type = box.querySelector('.type').value;
+                            let item = {
+                                type: type,
+                                name: box.querySelector('.name').value.trim(),
+                                url: box.querySelector('.url').value.trim()
+                            };
 
-                        // Pega o proxy dependendo do tipo de lista
-                        if(type === 'stalker') {
-                            if(box.querySelector('.use-proxy').checked) {
-                                proxy = box.querySelector('.proxy-url').value.trim();
+                            if(type === 'stalker') {
+                                item.mac = box.querySelector('.mac').value.trim();
+                                item.model = box.querySelector('.model').value;
+                                item.sn = box.querySelector('.sn').value.trim();
+                                item.id1 = box.querySelector('.id1').value.trim();
+                                item.id2 = box.querySelector('.id2').value.trim();
+                                item.sig = box.querySelector('.sig').value.trim();
+                                
+                                const pCheck = box.querySelector('.use-proxy');
+                                if(pCheck && pCheck.checked) {
+                                    item.proxy = box.querySelector('.proxy-url').value.trim();
+                                }
+                            } else {
+                                item.user = box.querySelector('.user').value.trim();
+                                item.pass = box.querySelector('.pass').value.trim();
+                                
+                                const pCheckXt = box.querySelector('.use-proxy-xtream');
+                                if(pCheckXt && pCheckXt.checked) {
+                                    item.proxy = box.querySelector('.proxy-url-xtream').value.trim();
+                                }
                             }
-                        } else {
-                            if(box.querySelector('.use-proxy-xtream').checked) {
-                                proxy = box.querySelector('.proxy-url-xtream').value.trim();
-                            }
-                        }
 
-                        return {
-                            type: type,
-                            name: box.querySelector('.name').value.trim(),
-                            url: box.querySelector('.url').value.trim(),
-                            mac: box.querySelector('.mac').value.trim(),
-                            model: box.querySelector('.model').value,
-                            sn: box.querySelector('.sn').value.trim(),
-                            id1: box.querySelector('.id1').value.trim(),
-                            id2: box.querySelector('.id2').value.trim(),
-                            sig: box.querySelector('.sig').value.trim(),
-                            user: box.querySelector('.user').value.trim(),
-                            pass: box.querySelector('.pass').value.trim(),
-                            proxy: proxy // Adicionado o campo proxy aqui
-                        };
-                    });
+                            // A DIETA: Apaga tudo o que estiver vazio para o link não ficar gigante
+                            Object.keys(item).forEach(key => {
+                                if (item[key] === "" || item[key] === null) delete item[key];
+                            });
 
-                    const config = { lists };
-                    const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(config))));
-                    window.location.href = "stremio://" + window.location.host + "/" + b64 + "/manifest.json";
+                            return item;
+                        });
+
+                        const config = { lists };
+                        const jsonStr = JSON.stringify(config);
+                        const b64 = btoa(unescape(encodeURIComponent(jsonStr)));
+                        
+                        // A PROTEÇÃO: Transforma os caracteres perigosos do Base64 em link seguro
+                        const urlSafeB64 = encodeURIComponent(b64);
+                        
+                        window.location.href = "stremio://" + window.location.host + "/" + urlSafeB64 + "/manifest.json";
+
+                    } catch (err) {
+                        console.error(err);
+                        alert("Erro ao gerar a instalação. Verifica se não tens caracteres estranhos.");
+                    }
                 }
 
                 addList();
