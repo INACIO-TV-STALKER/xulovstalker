@@ -11,7 +11,7 @@ const httpsAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 30000, max
 axios.defaults.httpAgent = httpAgent;
 axios.defaults.httpsAgent = httpsAgent;
 
-const PORT = process.env.PORT || 7860;
+const PORT = process.env.PORT || 3000;
 const app = express();
 
 app.use(cors());
@@ -20,7 +20,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// A Nova Página de Configuração - INTOCADA
+// A Nova Página de Configuração
 app.get("/", (req, res) => res.redirect("/configure"));
 app.get("/configure", (req, res) => {
     res.send(`
@@ -39,6 +39,8 @@ app.get("/configure", (req, res) => {
             .install-btn { background: #007bff; color: white; border: none; padding: 18px; width: 100%; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 18px; }
             .advanced { display: none; background: #141526; padding: 10px; border-radius: 8px; margin-top: 10px; }
             .adv-toggle { color: #007bff; font-size: 12px; cursor: pointer; text-decoration: underline; margin-top: 5px; display: block; }
+            .proxy-box { background: rgba(255, 165, 0, 0.1); border: 1px dashed #ffa500; padding: 10px; border-radius: 8px; margin-top: 10px; }
+            .proxy-box label { color: #ffa500 !important; }
         </style></head>
         <body>
             <div class="container">
@@ -49,26 +51,31 @@ app.get("/configure", (req, res) => {
             </div>
             <script>
                 let listCount = 0;
+
                 function addList() {
                     if(listCount >= 5) return alert("Máximo de 5 listas atingido!");
                     listCount++;
-                    const id = Date.now();
+                    const id = Date.now() + Math.floor(Math.random() * 1000);
                     const html = \`
                         <div class="list-box" id="box-\${id}">
-                            <div class="remove-btn" onclick="removeList(\${id})">REMOVER</div>
+                            <div class="remove-btn" onclick="removeList('\${id}')">REMOVER</div>
                             <h3>LISTA #\${listCount}</h3>
+
                             <label>TIPO DE LISTA</label>
-                            <select class="type" onchange="toggleType(this, \${id})">
+                            <select class="type" onchange="toggleType(this, '\${id}')">
                                 <option value="stalker">Stalker Portal (MAC)</option>
                                 <option value="xtream">Xtream Codes (User/Pass)</option>
                             </select>
+
                             <label>NOME DA LISTA</label>
                             <input type="text" class="name" placeholder="Ex: IPTV Portugal">
                             <label>URL PORTAL / SERVIDOR</label>
                             <input type="text" class="url" placeholder="http://portal.com:8080/c/">
+
                             <div id="stalker-group-\${id}">
                                 <label>MAC ADDRESS</label>
                                 <input type="text" class="mac" placeholder="00:1A:79:XX:XX:XX">
+                                
                                 <label>BOX MODEL</label>
                                 <select class="model">
                                     <option value="MAG250">MAG 250</option>
@@ -76,7 +83,8 @@ app.get("/configure", (req, res) => {
                                     <option value="MAG256">MAG 256</option>
                                     <option value="MAG322">MAG 322</option>
                                 </select>
-                                <span class="adv-toggle" onclick="toggleAdv(\${id})">Configurações Avançadas</span>
+
+                                <span class="adv-toggle" onclick="toggleAdv('\${id}')">Configurações Avançadas</span>
                                 <div class="advanced" id="adv-\${id}">
                                     <label>SERIAL NUMBER (SN)</label><input type="text" class="sn">
                                     <label>DEVICE ID 1</label><input type="text" class="id1">
@@ -84,19 +92,25 @@ app.get("/configure", (req, res) => {
                                     <label>SIGNATURE</label><input type="text" class="sig">
                                 </div>
                             </div>
+
                             <div id="xtream-group-\${id}" style="display:none;">
                                 <label>USERNAME</label>
                                 <input type="text" class="user" placeholder="O teu utilizador Xtream">
                                 <label>PASSWORD</label>
                                 <input type="text" class="pass" placeholder="A tua password Xtream">
                             </div>
+
+                            <div class="proxy-box">
+                                <label>🛡️ PROXY / VPN PARA DESBLOQUEIO (Opcional)</label>
+                                <input type="text" class="proxy-url" placeholder="http://user:pass@ip:porta">
+                                <div style="font-size: 10px; color: #aaa; margin-top: 4px;">Força a ligação por este IP. Útil para servidores teimosos.</div>
+                            </div>
                         </div>\`;
                     document.getElementById('lists-container').insertAdjacentHTML('beforeend', html);
                 }
-                function removeList(id) {
-                    document.getElementById('box-'+id).remove();
-                    listCount--;
-                }
+
+                function removeList(id) { document.getElementById('box-'+id).remove(); }
+
                 function toggleType(selectEl, id) {
                     if (selectEl.value === 'xtream') {
                         document.getElementById('stalker-group-'+id).style.display = 'none';
@@ -106,37 +120,55 @@ app.get("/configure", (req, res) => {
                         document.getElementById('xtream-group-'+id).style.display = 'none';
                     }
                 }
+
                 function toggleAdv(id) {
                     const el = document.getElementById('adv-'+id);
                     el.style.display = el.style.display === 'block' ? 'none' : 'block';
                 }
+
                 function install() {
                     const boxes = document.querySelectorAll('.list-box');
                     if(boxes.length === 0) return alert("Adiciona pelo menos uma lista!");
-                    const lists = Array.from(boxes).map(box => ({
-                        type: box.querySelector('.type').value,
-                        name: box.querySelector('.name').value.trim(),
-                        url: box.querySelector('.url').value.trim(),
-                        mac: box.querySelector('.mac').value.trim(),
-                        model: box.querySelector('.model').value,
-                        sn: box.querySelector('.sn').value.trim(),
-                        id1: box.querySelector('.id1').value.trim(),
-                        id2: box.querySelector('.id2').value.trim(),
-                        sig: box.querySelector('.sig').value.trim(),
-                        user: box.querySelector('.user').value.trim(),
-                        pass: box.querySelector('.pass').value.trim()
-                    }));
-                    const config = { lists };
-                    const b64 = btoa(JSON.stringify(config));
-                    window.location.href = "stremio://" + window.location.host + "/" + b64 + "/manifest.json";
+
+                    try {
+                        const lists = Array.from(boxes).map(box => {
+                            const type = box.querySelector('.type').value;
+                            // Função segura para não crashar se o campo estiver vazio
+                            const getV = (sel) => box.querySelector(sel)?.value?.trim() || "";
+
+                            return {
+                                type: type,
+                                name: getV('.name') || "IPTV",
+                                url: getV('.url'),
+                                mac: type === 'stalker' ? getV('.mac') : "",
+                                model: type === 'stalker' ? getV('.model') : "MAG250",
+                                sn: getV('.sn'),
+                                id1: getV('.id1'),
+                                id2: getV('.id2'),
+                                sig: getV('.sig'),
+                                user: type === 'xtream' ? getV('.user') : "",
+                                pass: type === 'xtream' ? getV('.pass') : "",
+                                proxy: getV('.proxy-url')
+                            };
+                        });
+
+                        const config = { lists: lists };
+                        const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(config))));
+                        window.location.href = "stremio://" + window.location.host + "/" + encodeURIComponent(b64) + "/manifest.json";
+
+                    } catch (err) {
+                        console.error("Erro na instalação:", err);
+                        alert("Erro ao gerar configuração.");
+                    }
                 }
-                addList();
+                              
+                window.onload = function() { addList(); };
             </script>
         </body></html>
     `);
 });
 
-// ROTAS DO STREMIO - INTOCADAS
+// ROTAS DO STREMIO
 app.get("/:config/manifest.json", async (req, res) => {
     res.json(await addon.getManifest(req.params.config));
 });
@@ -162,6 +194,7 @@ app.get("/:config/stream/:type/:id.json", async (req, res) => {
     res.json(await addon.getStreams(req.params.type, req.params.id, req.params.config, host));
 });
 
+// ROTA DO PROXY DE VÍDEO (A MÁGICA ACONTECE AQUI)
 app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const { config, listIdx, channelId } = req.params;
     const type = req.query.type || 'tv';
@@ -169,21 +202,13 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
     const configData = lists[listIdx];
     if (!configData) return res.status(400).end();
 
-    // 💡 LISTA NEGRA: Servidores que cortam aos 30 segundos (TV ou Filmes)
-    const servidoresComBloqueio = [
-        'elrinconcito', 
-        'luzentreaoceanos', 
-        'p1d5753'
-    ];
-
-    // Verifica se este servidor atual precisa de tratamento especial
+    const servidoresComBloqueio = ['luzentreaoceanos', 'p1d5753'];
     const precisaDeProxy = servidoresComBloqueio.some(s => configData.url.toLowerCase().includes(s));
 
     try {
         let finalUrl = "";
         let requestHeaders = { 
             'User-Agent': 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 27211 Safari/533.3',
-            // NOVIDADE: Se for servidor da lista negra, usamos 'close' MESMO NA TV para evitar a queda
             'Connection': precisaDeProxy ? 'close' : 'keep-alive' 
         };
 
@@ -194,8 +219,7 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
                        type === 'movie' ? `${baseUrl}/movie/${configData.user}/${configData.pass}/${channelId}` :
                        `${baseUrl}/series/${configData.user}/${configData.pass}/${channelId}`;
             return res.redirect(302, finalUrl);
-        } 
-        else {
+        } else {
             const auth = await addon.authenticate(configData);
             if (!auth) return res.status(401).end();
 
@@ -214,62 +238,56 @@ app.get("/proxy/:config/:listIdx/:channelId", async (req, res) => {
                 sUrl = `${auth.api}type=itv&action=create_link&cmd=${cmd}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
             }
 
-            const linkRes = await axios.get(sUrl, { headers: auth.authData.headers });
+            // Aplica Proxy na obtenção do link de stream
+            const linkRes = await axios.get(sUrl, addon.getAxiosOpts(configData, { headers: auth.authData.headers }));
             let streamUrl = linkRes.data?.js?.cmd || linkRes.data?.js || linkRes.data?.cmd;
 
             if (typeof streamUrl === 'string') {
-                let cleanUrl = streamUrl.trim();
+                let cleanUrl = streamUrl.trim().replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                 if (cleanUrl.includes('http://localhost/ch/')) {
                     const parts = cleanUrl.split('http://localhost/ch/');
                     finalUrl = parts[0].replace(/ffmpeg\s*$/, "").trim() + '/' + parts[1].trim();
+                } else if (cleanUrl.startsWith('http')) {
+                    finalUrl = cleanUrl;
                 } else {
-                    finalUrl = cleanUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-                }
-                if (!finalUrl.startsWith('http')) {
                     const baseServer = configData.url.replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
-                    finalUrl = baseServer + (finalUrl.startsWith('/') ? finalUrl : '/' + finalUrl);
+                    finalUrl = baseServer.replace(/\/$/, "") + (cleanUrl.startsWith('/') ? cleanUrl : '/' + cleanUrl);
                 }
+                finalUrl = finalUrl.trim();
             }
         }
 
         if (!finalUrl) return res.status(404).end();
 
-        // Se for VOD e NÃO estiver na lista negra, Redirect direto (Poupa Render)
-        if ((type === 'movie' || type === 'series') && !precisaDeProxy) {
-            return res.redirect(302, finalUrl);
+        if (req.headers.range && type !== 'movie' && type !== 'series') {
+            delete req.headers.range; 
         }
 
-        // Para TV ou Servidores Problemáticos -> PROXY
-        console.log(`[STABILITY MODE] A servir ${type} via Proxy (${precisaDeProxy ? 'Safe-Close' : 'Keep-Alive'}): ${finalUrl}`);
-
-        if (req.headers.range) requestHeaders['Range'] = req.headers.range;
-
-        const videoResponse = await axios({
+        let axiosOptions = addon.getAxiosOpts(configData, {
             method: 'get',
             url: finalUrl,
             headers: requestHeaders,
             responseType: 'stream',
-            timeout: 0,
+            timeout: 15000, // Tempo maior por causa da VPN
             maxRedirects: 5,
             validateStatus: false
         });
 
-        if (videoResponse.status >= 400) return res.redirect(302, finalUrl);
+        const videoResponse = await axios(axiosOptions);
 
-        res.status(videoResponse.status);
+        res.status(200);
         res.setHeader("Access-Control-Allow-Origin", "*");
         if (videoResponse.headers['content-type']) res.setHeader("Content-Type", videoResponse.headers['content-type']);
-        if (videoResponse.headers['content-length']) res.setHeader("Content-Length", videoResponse.headers['content-length']);
-        if (videoResponse.headers['content-range']) res.setHeader("Content-Range", videoResponse.headers['content-range']);
-        res.setHeader("Accept-Ranges", "bytes");
 
         videoResponse.data.pipe(res);
-        req.on('close', () => { if (videoResponse.data) videoResponse.data.destroy(); });
+
+        req.on('close', () => { 
+            if (videoResponse.data) videoResponse.data.destroy(); 
+        });
 
     } catch (e) {
-        console.error(`[PROXY ERROR] ${e.message}`);
         if (!res.headersSent) res.status(500).end();
     }
 });
 
-app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Tizen Addon Online na porta ${PORT}`));
+app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Addon Online na porta ${PORT}`));
