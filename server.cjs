@@ -52,8 +52,7 @@ app.get("/configure", (req, res) => {
                 <button class="add-btn" onclick="addList()">+ Adicionar Nova Lista (Máx 5)</button>
                 <button class="install-btn" onclick="install()">🚀 INSTALAR NO STREMIO</button>
             </div>
-
-            <script>
+<script>
                 let listCount = 0;
 
                 function addList() {
