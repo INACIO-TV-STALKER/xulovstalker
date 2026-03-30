@@ -41,15 +41,13 @@ const addon = {
         if (!configBase64) return [];
         try {
             let decoded;
-            try {
-                // Tenta ler o novo formato seguro Base64
-                decoded = Buffer.from(decodeURIComponent(configBase64), 'base64').toString('utf8');
-            } catch(e) {
-                // Caso seja um link antigo (URI encoded)
-                decoded = decodeURIComponent(configBase64);
-            }
+            // Decode robusto para Node.js
+            const clearB64 = decodeURIComponent(configBase64);
+            decoded = Buffer.from(clearB64, 'base64').toString('utf8');
+            
             const data = JSON.parse(decoded);
-            return data.lists || [];
+            // Aceita tanto o formato {lists: []} como apenas o array []
+            return Array.isArray(data) ? data : (data.lists || []);
         } catch (e) {
             console.error("Erro ao ler config:", e.message);
             return [];
@@ -87,39 +85,51 @@ const addon = {
 
     async getManifest(configBase64) {
         const cacheKey = `manifest_${configBase64}`;
-        const cached = getCache(cacheKey); if (cached) return cached;
+        const cached = getCache(cacheKey); 
+        if (cached) return cached;
+
         const lists = this.parseConfig(configBase64);
         let catalogs = [];
-        
-        await Promise.all(lists.map(async (l, i) => {
-            try {
-                if (l.type === 'xtream') {
-                    let tvG = ["Predefinido"], movG = ["Predefinido"], serG = ["Predefinido"];
-                    const b = l.url.trim().replace(/\/$/, "");
-                    const api = `${b}/player_api.php?username=${encodeURIComponent(l.user)}&password=${encodeURIComponent(l.pass)}`;
-                    const f = async (a) => { const r = await axios.get(`${api}&action=${a}`, { timeout: 3000 }); return Array.isArray(r.data) ? r.data.map(g => g.category_name) : []; };
-                    const [c1, c2, c3] = await Promise.all([f('get_live_categories'), f('get_vod_categories'), f('get_series_categories')]);
-                    
-                    catalogs.push({ type: "tv", id: `cat_${i}`, name: l.name || `Lista ${i+1}`, extra: [{ name: "genre", options: tvG.concat(c1).filter(Boolean) }, { name: "skip" }] });
-                    catalogs.push({ type: "movie", id: `mov_${i}`, name: `${l.name || `Lista ${i+1}`} 🎬`, extra: [{ name: "genre", options: movG.concat(c2).filter(Boolean) }, { name: "skip" }] });
-                    catalogs.push({ type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿`, extra: [{ name: "genre", options: serG.concat(c3).filter(Boolean) }, { name: "skip" }] });
-                } else {
-                    // 🔥 STALKER: Apenas TV, sem Filmes nem Séries!
-                    const auth = await addon.authenticate(l);
-                    if (auth) {
-                        const r = await axios.get(`${auth.api}type=itv&action=get_genres&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, { headers: auth.authData.headers, timeout: 4000 });
-                        const items = r.data?.js?.data || r.data?.js || [];
-                        const genres = (Array.isArray(items) ? items : Object.values(items)).map(g => g.title || g.name).filter(Boolean);
-                        
-                        catalogs.push({ type: "tv", id: `cat_${i}`, name: l.name || `Lista ${i+1}`, extra: [{ name: "genre", options: ["Predefinido"].concat(genres) }, { name: "skip" }] });
-                    }
-                }
-            } catch(e) { console.error(`[MANIFEST ERROR] Falha ao carregar lista ${i}:`, e.message); }
-        }));
 
-        const addonName = lists.map(l => l.name).filter(Boolean).join(" + ") || "XuloV Hub";
-        const m = { id: "org.xulov.stalker", version: "6.0.0", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
-        setCache(cacheKey, m, 60); return m;
+        // Usamos um loop simples para garantir a ordem das listas
+        for (let i = 0; i < lists.length; i++) {
+            const l = lists[i];
+            const name = l.name || `Lista ${i + 1}`;
+
+            if (l.type === 'xtream') {
+                catalogs.push({ 
+                    type: "tv", id: `cat_${i}`, name: name, 
+                    extra: [{ name: "genre", options: ["Predefinido"] }, { name: "skip" }] 
+                });
+                catalogs.push({ 
+                    type: "movie", id: `mov_${i}`, name: `${name} 🎬`, 
+                    extra: [{ name: "genre", options: ["Predefinido"] }, { name: "skip" }] 
+                });
+                catalogs.push({ 
+                    type: "series", id: `ser_${i}`, name: `${name} 🍿`, 
+                    extra: [{ name: "genre", options: ["Predefinido"] }, { name: "skip" }] 
+                });
+            } else {
+                // 🔥 CORREÇÃO PRO: Stalker aparece SEMPRE, mesmo que o auth falhe agora
+                catalogs.push({ 
+                    type: "tv", id: `cat_${i}`, name: `${name} (Stalker)`, 
+                    extra: [{ name: "genre", options: ["Predefinido"] }, { name: "skip" }] 
+                });
+            }
+        }
+
+        const m = { 
+            id: "org.xulov.stalker", 
+            version: "6.1.0", 
+            name: "XuloV Multi-Hub", 
+            resources: ["catalog", "stream", "meta"], 
+            types: ["tv", "movie", "series"], 
+            idPrefixes: ["xlv:"], 
+            catalogs: catalogs 
+        };
+        
+        setCache(cacheKey, m, 10); // Cache curto para testes
+        return m;
     },
 
     async getCatalog(type, id, extra, configBase64) {
