@@ -12,22 +12,47 @@ function setCache(key, data, ttlMinutes = 30) {
 
 const getStalkerAuth = function(config, token) {
     const mac = (config.mac || "").toUpperCase();
-    const sn  = config.sn  || "123456789012"; 
-    const id1 = config.id1 || "5A6B7C8D9E0F1A2B3C4D5E6F"; 
-    const sig = config.sig || "6D884C699E2A89C71D2D5E1E6B9E8A7F";
+
+    const seed = crypto.createHash('md5').update(mac || 'vazio').digest('hex').toUpperCase();
+    
+    // Se não preencheres nada no painel, ele usa o gerado automaticamente.
+    const sn  = config.sn  || seed.substring(0, 14); 
+    const id1 = config.id1 || seed; 
+    const sig = config.sig || "";
+
+    // 2. MUDAR A IDENTIDADE DEPENDENDO DA BOX ESCOLHIDA
+    const model = config.model || "MAG250";
+    let ua = "";
+    let xua = "";
+
+    switch(model) {
+        case "MAG322":
+            ua = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 27211 Safari/533.3";
+            xua = `Model: MAG322; SW: 2.20.05-322; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
+            break;
+        case "MAG254":
+            ua = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 254 Safari/533.3";
+            xua = `Model: MAG254; SW: 0.2.18-r22; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
+            break;
+        case "MAG256":
+            ua = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 27211 Safari/533.3";
+            xua = `Model: MAG256; SW: 2.20.05-256; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
+            break;
+        default: // MAG250 (Padrão)
+            ua = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3";
+            xua = `Model: MAG250; SW: 0.2.18-r14; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
+    }
 
     let cookie = `mac=${encodeURIComponent(mac)}; stb_lang=en; timezone=Europe/Lisbon;`;
     if (token) cookie += ` access_token=${token};`;
-
-    const xUserAgent = `Model: MAG250; SW: 0.2.18-r14; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
 
     return {
         sn: sn,
         id1: id1,
         sig: sig,
         headers: {
-            "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3",
-            "X-User-Agent": xUserAgent,
+            "User-Agent": ua,
+            "X-User-Agent": xua,
             "Cookie": cookie,
             "Referer": config.url.replace(/\/$/, "") + "/c/",
             "Accept": "*/*",
