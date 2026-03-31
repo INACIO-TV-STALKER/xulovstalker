@@ -16,12 +16,10 @@ const getStalkerAuth = function(config, token) {
 
     const seed = crypto.createHash('md5').update(mac || 'vazio').digest('hex').toUpperCase();
 
-    // Se não preencheres nada no painel, ele usa o gerado automaticamente.
     const sn  = config.sn  || seed.substring(0, 14); 
     const id1 = config.id1 || seed; 
     const sig = config.sig || "";
 
-    // 2. MUDAR A IDENTIDADE DEPENDENDO DA BOX ESCOLHIDA
     const model = config.model || "MAG250";
     let ua = "";
     let xua = "";
@@ -39,7 +37,7 @@ const getStalkerAuth = function(config, token) {
             ua = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 27211 Safari/533.3";
             xua = `Model: MAG256; SW: 2.20.05-256; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
             break;
-        default: // MAG250 (Padrão)
+        default: 
             ua = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3";
             xua = `Model: MAG250; SW: 0.2.18-r14; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
     }
@@ -63,13 +61,11 @@ const getStalkerAuth = function(config, token) {
 };
 
 const addon = {
-    // 🔥 HELPER PROFISSIONAL ATUALIZADO: Agora suporta SOCKS5 e HTTP
     getAxiosOpts(config, extraOpts = {}) {
         let opts = { ...extraOpts };
         if (config && config.proxy) {
             const proxyStr = config.proxy.trim();
             if (proxyStr.startsWith('socks')) {
-                // Injeta o Agente SOCKS5 para a IPVanish/Outras
                 const agent = new SocksProxyAgent(proxyStr);
                 opts.httpAgent = agent;
                 opts.httpsAgent = agent;
@@ -111,7 +107,6 @@ const addon = {
 
         try {
             var hUrl = url + "?type=stb&action=handshake&sn=" + authData.sn + "&device_id=" + authData.id1 + "&JsHttpRequest=1-0";
-            // Aplica Proxy no Handshake com Timeout de 10s
             var res = await axios.get(hUrl, this.getAxiosOpts(config, { headers: authData.headers, timeout: 10000 }));
             var token = res.data?.js?.token || res.data?.token || null;
 
@@ -164,10 +159,16 @@ const addon = {
     },
 
     async getCatalog(type, id, extra, configBase64) {
+        // 🔥 INJEÇÃO DE VELOCIDADE: Verifica se o catálogo já foi carregado antes
+        const skip = parseInt(extra.skip) || 0;
+        const catalogCacheKey = `catalog_${id}_${type}_${extra.genre || 'all'}_${skip}`;
+        const cachedCatalog = getCache(catalogCacheKey);
+        if (cachedCatalog) return cachedCatalog;
+
         const lists = this.parseConfig(configBase64);
         const lIdx = parseInt(id.split('_')[1]);
         const config = lists[lIdx]; if (!config) return { metas: [] };
-        const skip = parseInt(extra.skip) || 0;
+        
         let metas = [];
         try {
             if (config.type === 'xtream') {
@@ -176,8 +177,16 @@ const addon = {
                 let act = type === "tv" ? "get_live_streams" : (type === "movie" ? "get_vod_streams" : "get_series");
                 if (extra.genre && extra.genre !== "Predefinido") {
                     const cAct = type === "tv" ? "get_live_categories" : (type === "movie" ? "get_vod_categories" : "get_series_categories");
-                    const cRes = await axios.get(`${api}&action=${cAct}`, this.getAxiosOpts(config, {timeout: 5000}));
-                    const cat = (cRes.data || []).find(c => c.category_name === extra.genre);
+                    
+                    // 🔥 CACHE DE CATEGORIAS: Evita ir à internet procurar IDs
+                    const catCacheKey = `xcats_${b}_${cAct}`;
+                    let cats = getCache(catCacheKey);
+                    if (!cats) {
+                        const cRes = await axios.get(`${api}&action=${cAct}`, this.getAxiosOpts(config, {timeout: 5000}));
+                        cats = cRes.data || [];
+                        setCache(catCacheKey, cats, 60); // Memoriza por 1 hora
+                    }
+                    const cat = cats.find(c => c.category_name === extra.genre);
                     if (cat) act += `&category_id=${cat.category_id}`;
                 }
                 const res = await axios.get(`${api}&action=${act}`, this.getAxiosOpts(config, {timeout: 10000}));
@@ -192,14 +201,20 @@ const addon = {
                     let catP = "";
                     if (extra.genre && extra.genre !== "Predefinido") {
                         const cAct = sType === "itv" ? "get_genres" : "get_categories";
-                        const cRes = await axios.get(`${auth.api}type=${sType}&action=${cAct}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 }));
-                        const cats = cRes.data?.js?.data || cRes.data?.js || [];
+                        
+                        // 🔥 CACHE DE CATEGORIAS STALKER
+                        const catCacheKey = `scats_${auth.api}_${cAct}`;
+                        let cats = getCache(catCacheKey);
+                        if (!cats) {
+                            const cRes = await axios.get(`${auth.api}type=${sType}&action=${cAct}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 }));
+                            cats = cRes.data?.js?.data || cRes.data?.js || [];
+                            setCache(catCacheKey, cats, 60); // Memoriza por 1 hora
+                        }
                         const cat = (Array.isArray(cats) ? cats : Object.values(cats)).find(c => (c.title || c.name) === extra.genre);
                         if (cat) catP = sType === "itv" ? `&genre=${cat.id}` : `&category=${cat.id}`;
                     }
 
                     let sAct = "get_ordered_list"; 
-
                     const page = Math.floor(skip / 14) + 1;
                     const url = `${auth.api}type=${sType}&action=${sAct}${catP}&p=${page}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
                     const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 }));
@@ -211,7 +226,11 @@ const addon = {
                 }
             }
         } catch (e) { console.error("[CATALOG ERROR]", e.message); }
-        return { metas };
+        
+        const finalResult = { metas };
+        // Guarda as imagens/nomes na memória durante 15 minutos para ser instantâneo ao voltar atrás
+        if (metas.length > 0) setCache(catalogCacheKey, finalResult, 15);
+        return finalResult;
     },
 
     async getMeta(type, id, configBase64) {
@@ -221,6 +240,7 @@ const addon = {
         return { meta };
     },
 
+    // A função de zapping intocada!
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":"); const lIdx = parseInt(parts[1]); const sId = parts[2];
         const lists = this.parseConfig(configBase64); const config = lists[lIdx];
