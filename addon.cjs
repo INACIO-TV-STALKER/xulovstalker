@@ -164,15 +164,11 @@ const addon = {
                         if (cat) catP = sType === "itv" ? `&genre=${cat.id}` : `&category=${cat.id}`;
                     }
 
-                    let sAct = "get_all_channels"; 
-                    if (type === "tv") {
-                        sAct = catP ? "get_ordered_list" : "get_all_channels";
-                    } else {
-                        sAct = "get_ordered_list";
-                    }
-
+                    let sAct = "get_ordered_list"; // Forçamos o ordered_list para portais teimosos
+                    
                     const page = Math.floor(skip / 14) + 1;
-                    const url = `${auth.api}type=${sType}&action=${sAct}${catP}&p=${page}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                    // Adicionamos o force_ch_link_check=1 que ajuda em alguns bloqueios
+                    const url = `${auth.api}type=${sType}&action=${sAct}${catP}&p=${page}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
                     const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 }));
                     const raw = res.data?.js?.data || res.data?.js || [];
                     metas = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => ({
