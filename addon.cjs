@@ -15,7 +15,7 @@ const getStalkerAuth = function(config, token) {
     const mac = (config.mac || "").toUpperCase();
 
     const seed = crypto.createHash('md5').update(mac || 'vazio').digest('hex').toUpperCase();
-    
+
     // Se não preencheres nada no painel, ele usa o gerado automaticamente.
     const sn  = config.sn  || seed.substring(0, 14); 
     const id1 = config.id1 || seed; 
@@ -63,19 +63,27 @@ const getStalkerAuth = function(config, token) {
 };
 
 const addon = {
-    // 🔥 HELPER PROFISSIONAL: Prepara o Proxy para o Axios automaticamente
+    // 🔥 HELPER PROFISSIONAL ATUALIZADO: Agora suporta SOCKS5 e HTTP
     getAxiosOpts(config, extraOpts = {}) {
         let opts = { ...extraOpts };
-        if (config && config.proxy && config.proxy.startsWith('http')) {
-            try {
-                const p = new URL(config.proxy);
-                opts.proxy = {
-                    protocol: p.protocol.replace(':', ''),
-                    host: p.hostname,
-                    port: parseInt(p.port),
-                    auth: p.username ? { username: decodeURIComponent(p.username), password: decodeURIComponent(p.password) } : undefined
-                };
-            } catch(e) {}
+        if (config && config.proxy) {
+            const proxyStr = config.proxy.trim();
+            if (proxyStr.startsWith('socks')) {
+                // Injeta o Agente SOCKS5 para a IPVanish/Outras
+                const agent = new SocksProxyAgent(proxyStr);
+                opts.httpAgent = agent;
+                opts.httpsAgent = agent;
+            } else if (proxyStr.startsWith('http')) {
+                try {
+                    const p = new URL(proxyStr);
+                    opts.proxy = {
+                        protocol: p.protocol.replace(':', ''),
+                        host: p.hostname,
+                        port: parseInt(p.port),
+                        auth: p.username ? { username: decodeURIComponent(p.username), password: decodeURIComponent(p.password) } : undefined
+                    };
+                } catch(e) {}
+            }
         }
         return opts;
     },
@@ -190,10 +198,9 @@ const addon = {
                         if (cat) catP = sType === "itv" ? `&genre=${cat.id}` : `&category=${cat.id}`;
                     }
 
-                    let sAct = "get_ordered_list"; // Forçamos o ordered_list para portais teimosos
-                    
+                    let sAct = "get_ordered_list"; 
+
                     const page = Math.floor(skip / 14) + 1;
-                    // Adicionamos o force_ch_link_check=1 que ajuda em alguns bloqueios
                     const url = `${auth.api}type=${sType}&action=${sAct}${catP}&p=${page}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
                     const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 }));
                     const raw = res.data?.js?.data || res.data?.js || [];
