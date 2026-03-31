@@ -1,5 +1,6 @@
 const axios = require("axios");
 const crypto = require("crypto");
+const { SocksProxyAgent } = require('socks-proxy-agent');
 
 const memCache = {};
 function getCache(key) {
