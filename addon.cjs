@@ -81,25 +81,59 @@ const addon = {
         } catch (e) { return null; }
     },
 
+    // FUNÇÃO AUXILIAR PARA PEGAR AS CATEGORIAS PARA O GÉNERO
+    async fetchGenres(config, type) {
+        const cacheKey = `genres_${config.url}_${type}`;
+        const cached = getCache(cacheKey); if (cached) return cached;
+        let genres = [];
+        try {
+            if (config.type === 'xtream') {
+                const b = config.url.trim().replace(/\/$/, "");
+                const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
+                const act = type === "tv" ? "get_live_categories" : (type === "movie" ? "get_vod_categories" : "get_series_categories");
+                const res = await axios.get(`${api}&action=${act}`, this.getAxiosOpts(config));
+                if (Array.isArray(res.data)) genres = res.data.map(c => c.category_name);
+            } else {
+                const auth = await this.authenticate(config);
+                if (auth) {
+                    const sType = type === "tv" ? "itv" : (type === "movie" ? "vod" : "series");
+                    const url = `${auth.api}type=${sType}&action=get_categories&token=${auth.token}&JsHttpRequest=1-0`;
+                    const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers }));
+                    const cats = res.data?.js || [];
+                    genres = cats.map(c => c.category_name || c.name);
+                }
+            }
+        } catch (e) {}
+        const final = genres.filter(Boolean);
+        setCache(cacheKey, final, 30);
+        return final;
+    },
+
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
         const catalogs = [];
         
-        // Nome do Addon no topo (Ocupa o lugar de XuloV Ultra Fast)
+        // 1. O NOME DO ADDON É O LINK (Substitui o XuloV Ultra Fast)
         let mainName = "XuloV Ultra Fast";
-        if (lists.length > 0) mainName = lists[0].name || lists[0].url;
+        if (lists.length > 0) mainName = lists[0].url || lists[0].name;
 
-        lists.forEach((l, i) => {
-            const listTitle = l.name || `Lista ${i+1}`;
-            // Recupera a escolha da lista no menu lateral (Canais, Filmes, Séries por servidor)
-            catalogs.push({ type: "tv", id: `cat_${i}`, name: `${listTitle} TV`, extra: [{ name: "genre" }, { name: "skip" }] });
-            catalogs.push({ type: "movie", id: `mov_${i}`, name: `${listTitle} Filmes`, extra: [{ name: "genre" }, { name: "skip" }] });
-            catalogs.push({ type: "series", id: `ser_${i}`, name: `${listTitle} Séries`, extra: [{ name: "genre" }, { name: "skip" }] });
-        });
+        for (let i = 0; i < lists.length; i++) {
+            const l = lists[i];
+            const listTitle = l.name || `Servidor ${i+1}`;
+            
+            // 2. BUSCA DINÂMICA DAS CATEGORIAS PARA APARECEREM NA ABA GENRE
+            const tvGenres = await this.fetchGenres(l, "tv");
+            const movieGenres = await this.fetchGenres(l, "movie");
+            const seriesGenres = await this.fetchGenres(l, "series");
+
+            catalogs.push({ type: "tv", id: `cat_${i}`, name: `${listTitle} TV`, genres: tvGenres, extra: [{ name: "genre" }, { name: "skip" }] });
+            catalogs.push({ type: "movie", id: `mov_${i}`, name: `${listTitle} Filmes`, genres: movieGenres, extra: [{ name: "genre" }, { name: "skip" }] });
+            catalogs.push({ type: "series", id: `ser_${i}`, name: `${listTitle} Séries`, genres: seriesGenres, extra: [{ name: "genre" }, { name: "skip" }] });
+        }
         
         return { 
             id: "org.xulov.stalker", 
-            version: "5.5.5", 
+            version: "5.6.0", 
             name: mainName, 
             resources: ["catalog", "stream", "meta"], 
             types: ["tv", "movie", "series"], 
@@ -120,16 +154,13 @@ const addon = {
             if (config.type === 'xtream') {
                 const b = config.url.trim().replace(/\/$/, "");
                 const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
-                
-                // DEVOLVE AS CATEGORIAS AO GÉNERO
-                let catAct = type === "tv" ? "get_live_categories" : (type === "movie" ? "get_vod_categories" : "get_series_categories");
-                const catRes = await axios.get(`${api}&action=${catAct}`, this.getAxiosOpts(config));
-                const categories = Array.isArray(catRes.data) ? catRes.data : [];
-
                 let act = type === "tv" ? "get_live_streams" : (type === "movie" ? "get_vod_streams" : "get_series");
                 let url = `${api}&action=${act}`;
+                
                 if (genre) {
-                    const foundCat = categories.find(c => c.category_name === genre);
+                    const catAct = type === "tv" ? "get_live_categories" : (type === "movie" ? "get_vod_categories" : "get_series_categories");
+                    const catRes = await axios.get(`${api}&action=${catAct}`, this.getAxiosOpts(config));
+                    const foundCat = (catRes.data || []).find(c => c.category_name === genre);
                     if (foundCat) url += `&category_id=${foundCat.category_id}`;
                 }
 
@@ -189,7 +220,7 @@ const addon = {
             streams.push({ 
                 name: chName, 
                 url: `${b}/${config.user}/${config.pass}/${sId}`, 
-                title: `⚡ Direto TV`, // Limpo, sem link
+                title: `⚡ Direto TV`, // 3. LINK REMOVIDO DO TÍTULO (Fica limpo)
                 behaviorHints: { notWebReady: true } 
             });
         } else {
