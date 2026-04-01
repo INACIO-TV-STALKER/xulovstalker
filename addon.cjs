@@ -81,16 +81,25 @@ const addon = {
         } catch (e) { return null; }
     },
 
+    // AQUI: Alterado para o Nome da Lista substituir o "XuloV Ultra Fast" lá em cima
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
         const catalogs = [];
+        
+        // Vai buscar o nome da primeira lista configurada para usar como título principal
+        let mainAddonName = "XuloV Ultra Fast";
+        if (lists.length > 0 && lists[0].name) {
+            mainAddonName = lists[0].name; 
+        }
+
         lists.forEach((l, i) => {
             const listName = l.name || `Lista ${i+1}`;
             catalogs.push({ type: "tv", id: `cat_${i}`, name: listName, extra: [{ name: "genre" }, { name: "skip" }] });
             catalogs.push({ type: "movie", id: `mov_${i}`, name: `${listName} 🎬`, extra: [{ name: "genre" }, { name: "skip" }] });
             catalogs.push({ type: "series", id: `ser_${i}`, name: `${listName} 🍿`, extra: [{ name: "genre" }, { name: "skip" }] });
         });
-        return { id: "org.xulov.stalker", version: "5.5.0", name: "XuloV Ultra Fast", resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs };
+        
+        return { id: "org.xulov.stalker", version: "5.5.0", name: mainAddonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs };
     },
 
     async getCatalog(type, id, extra, configBase64) {
@@ -165,7 +174,7 @@ const addon = {
         return { meta: { id, type, name, posterShape: type === "tv" ? "landscape" : "poster" } };
     },
 
-    // AQUI ESTÃO AS ALTERAÇÕES VISUAIS EXACTAMENTE COMO PEDISTE NA IMAGEM
+    // AQUI: Limpeza total dos botões - Sem nome da lista a sujar
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":"); 
         const lIdx = parseInt(parts[1]); 
@@ -176,7 +185,6 @@ const addon = {
         const config = lists[lIdx]; 
         if (!config) return { streams: [] };
 
-        const listName = config.name || `Lista ${lIdx + 1}`;
         const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
 
         let streams = [];
@@ -184,9 +192,9 @@ const addon = {
         if (config.type === 'xtream') {
             const b = config.url.trim().replace(/\/$/, "");
             streams.push({ 
-                name: channelName, // Letras grandes e principais no botão
+                name: channelName, // Canal em grande
                 url: `${b}/${config.user}/${config.pass}/${sId}`, 
-                title: `${listName}\n⚡ Direto TV`, // Nome da Lista e subtítulo discreto por baixo
+                title: `⚡ Direto TV`, // Título ultra limpo, sem link a sujar
                 behaviorHints: { notWebReady: true } 
             });
         } else {
@@ -200,9 +208,9 @@ const addon = {
                         let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                         if (cleanUrl.startsWith('http')) {
                             streams.push({ 
-                                name: channelName, // Letras grandes e principais no botão
+                                name: channelName, // Canal em grande
                                 url: cleanUrl, 
-                                title: `${listName}\n⚡ Direto TV`, // Nome da Lista e subtítulo discreto por baixo
+                                title: `⚡ Direto TV`, // Título ultra limpo
                                 behaviorHints: { notWebReady: true } 
                             });
                         }
@@ -212,9 +220,9 @@ const addon = {
         }
 
         streams.push({ 
-            name: channelName, // Letras grandes e principais no botão
+            name: channelName, // Canal em grande
             url: pUrl, 
-            title: `${listName}\n🔄 Proxy Estável`, // Nome da Lista e subtítulo discreto por baixo
+            title: `🔄 Proxy Estável`, // Título ultra limpo
             behaviorHints: { notWebReady: true } 
         });
         
