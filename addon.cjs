@@ -53,7 +53,7 @@ const addon = {
             ...extraOpts,
             httpAgent: httpAgent, 
             httpsAgent: httpsAgent,
-            timeout: extraOpts.timeout || 8000 // Timeout ligeiramente mais curto para não prender a TV
+            timeout: extraOpts.timeout || 8000
         };
         
         if (config && config.proxy) {
@@ -110,7 +110,7 @@ const addon = {
 
             if (token) {
                 const finalAuth = { token: token, api: url + "?", authData: getStalkerAuth(config, token) };
-                setCache(cacheKey, finalAuth, 50); // Cache ligeiramente inferior ao timeout do portal
+                setCache(cacheKey, finalAuth, 50);
                 return finalAuth;
             }
             return null;
@@ -123,7 +123,6 @@ const addon = {
         const lists = this.parseConfig(configBase64);
         
         let catalogs = [];
-        // 🔥 PERFORMANCE: Carregamento paralelo ultra-rápido
         await Promise.all(lists.map(async (l, i) => {
             const listCacheKey = `list_cats_${i}_${configBase64}`;
             let listCats = getCache(listCacheKey);
@@ -168,7 +167,7 @@ const addon = {
             catalogs.push({ type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿`, extra: [{ name: "genre", options: listCats.serG.filter(Boolean) }, { name: "skip" }] });
         }));
 
-        const m = { id: "org.xulov.stalker", version: "5.4.0", name: "XuloV Ultra Fast", resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs };
+        const m = { id: "org.xulov.stalker", version: "5.4.1", name: "XuloV Ultra Fast", resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs };
         setCache(cacheKey, m, 60); return m;
     },
 
@@ -243,13 +242,17 @@ const addon = {
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":"); const lIdx = parseInt(parts[1]); const sId = parts[2];
         const lists = this.parseConfig(configBase64); const config = lists[lIdx];
+        
+        // RECUPERA O NOME DA LISTA PARA ISOLAR OS BOTÕES NO STREMIO
+        const listName = config.name || `Lista ${lIdx + 1}`;
+        
         const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
 
-        if (type !== 'tv') return { streams: [{ url: pUrl, title: `🎬 Reproduzir (Proxy)`, behaviorHints: { notWebReady: true } }] };
+        if (type !== 'tv') return { streams: [{ url: pUrl, title: `${listName}\n🎬 Reproduzir (Proxy)`, behaviorHints: { notWebReady: true } }] };
 
         if (config?.type === 'xtream') {
             const b = config.url.trim().replace(/\/$/, "");
-            return { streams: [{ url: `${b}/${config.user}/${config.pass}/${sId}`, title: `📺 Directo`, behaviorHints: { notWebReady: true } }, { url: pUrl, title: `🛡️ Proxy`, behaviorHints: { notWebReady: true } }] };
+            return { streams: [{ url: `${b}/${config.user}/${config.pass}/${sId}`, title: `${listName}\n📺 Directo`, behaviorHints: { notWebReady: true } }, { url: pUrl, title: `${listName}\n🛡️ Proxy`, behaviorHints: { notWebReady: true } }] };
         }
 
         let streams = [];
@@ -261,12 +264,12 @@ const addon = {
                 let cmdUrl = res.data?.js?.cmd || res.data?.js;
                 if (typeof cmdUrl === 'string') {
                     let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-                    if (cleanUrl.startsWith('http')) streams.push({ url: cleanUrl, title: `⚡ Directo TV`, behaviorHints: { notWebReady: true } });
+                    if (cleanUrl.startsWith('http')) streams.push({ url: cleanUrl, title: `${listName}\n⚡ Directo TV`, behaviorHints: { notWebReady: true } });
                 }
             }
         } catch(e) {}
 
-        streams.push({ url: pUrl, title: `🔄 Proxy Estável`, behaviorHints: { notWebReady: true } });
+        streams.push({ url: pUrl, title: `${listName}\n🔄 Proxy Estável`, behaviorHints: { notWebReady: true } });
         return { streams };
     }
 };
