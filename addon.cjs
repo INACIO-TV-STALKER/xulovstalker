@@ -81,25 +81,32 @@ const addon = {
         } catch (e) { return null; }
     },
 
-    // AQUI: Alterado para o Nome da Lista substituir o "XuloV Ultra Fast" lá em cima
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
         const catalogs = [];
         
-        // Vai buscar o nome da primeira lista configurada para usar como título principal
+        // 1. Define o Nome do Addon no topo como o Link/Nome da lista
         let mainAddonName = "XuloV Ultra Fast";
-        if (lists.length > 0 && lists[0].name) {
-            mainAddonName = lists[0].name; 
+        if (lists.length > 0) {
+            mainAddonName = lists[0].name || lists[0].url; 
         }
 
         lists.forEach((l, i) => {
-            const listName = l.name || `Lista ${i+1}`;
-            catalogs.push({ type: "tv", id: `cat_${i}`, name: listName, extra: [{ name: "genre" }, { name: "skip" }] });
-            catalogs.push({ type: "movie", id: `mov_${i}`, name: `${listName} 🎬`, extra: [{ name: "genre" }, { name: "skip" }] });
-            catalogs.push({ type: "series", id: `ser_${i}`, name: `${listName} 🍿`, extra: [{ name: "genre" }, { name: "skip" }] });
+            // 2. DEVOLVE AS CATEGORIAS (Canais, Filmes, Séries) ao menu lateral
+            catalogs.push({ type: "tv", id: `cat_${i}`, name: "Canais TV", extra: [{ name: "genre" }, { name: "skip" }] });
+            catalogs.push({ type: "movie", id: `mov_${i}`, name: "Filmes 🎬", extra: [{ name: "genre" }, { name: "skip" }] });
+            catalogs.push({ type: "series", id: `ser_${i}`, name: "Séries 🍿", extra: [{ name: "genre" }, { name: "skip" }] });
         });
         
-        return { id: "org.xulov.stalker", version: "5.5.0", name: mainAddonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs };
+        return { 
+            id: "org.xulov.stalker", 
+            version: "5.5.0", 
+            name: mainAddonName, 
+            resources: ["catalog", "stream", "meta"], 
+            types: ["tv", "movie", "series"], 
+            idPrefixes: ["xlv:"], 
+            catalogs 
+        };
     },
 
     async getCatalog(type, id, extra, configBase64) {
@@ -114,27 +121,9 @@ const addon = {
             if (config.type === 'xtream') {
                 const b = config.url.trim().replace(/\/$/, "");
                 const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
-                
                 let act = type === "tv" ? "get_live_streams" : (type === "movie" ? "get_vod_streams" : "get_series");
-                let url = `${api}&action=${act}`;
-                
-                const cacheCatKey = `cats_${config.url}_${type}`;
-                let categories = getCache(cacheCatKey);
-                if (!categories) {
-                    let catAct = type === "tv" ? "get_live_categories" : (type === "movie" ? "get_vod_categories" : "get_series_categories");
-                    const catRes = await axios.get(`${api}&action=${catAct}`, this.getAxiosOpts(config));
-                    categories = Array.isArray(catRes.data) ? catRes.data : [];
-                    setCache(cacheCatKey, categories, 60);
-                }
-
-                const res = await axios.get(url, this.getAxiosOpts(config));
+                const res = await axios.get(`${api}&action=${act}`, this.getAxiosOpts(config));
                 let data = Array.isArray(res.data) ? res.data : [];
-
-                if (genre) {
-                    const targetCat = categories.find(c => c.category_name === genre);
-                    if (targetCat) data = data.filter(item => item.category_id === targetCat.category_id);
-                }
-
                 metas = data.slice(skip, skip + 120).map(item => ({
                     id: `xlv:${lIdx}:${item.stream_id || item.series_id}${type === 'movie' ? '.' + (item.container_extension || 'mp4') : ''}:${encodeURIComponent(item.name || item.title)}`,
                     name: item.name || item.title, type, poster: item.stream_icon || item.cover, posterShape: type === "tv" ? "landscape" : "poster"
@@ -145,19 +134,9 @@ const addon = {
                     const sType = type === "tv" ? "itv" : (type === "movie" ? "vod" : "series");
                     const page = Math.floor(skip / 14) + 1;
                     let url = `${auth.api}type=${sType}&action=get_ordered_list&p=${page}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
-                    
-                    if (genre) {
-                        const catUrl = `${auth.api}type=${sType}&action=get_categories&token=${auth.token}&JsHttpRequest=1-0`;
-                        const catRes = await axios.get(catUrl, this.getAxiosOpts(config, { headers: auth.authData.headers }));
-                        const cats = catRes.data?.js || [];
-                        const found = cats.find(c => c.category_name === genre || c.name === genre);
-                        if (found) url += `&category=${found.id}`;
-                    }
-
                     const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers }));
                     const raw = res.data?.js?.data || res.data?.js || [];
                     const items = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd));
-                    
                     metas = items.map(m => ({
                         id: `xlv:${lIdx}:${encodeURIComponent(m.cmd || m.id)}:${encodeURIComponent(m.name || m.title)}`,
                         name: m.name || m.title, type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
@@ -174,7 +153,6 @@ const addon = {
         return { meta: { id, type, name, posterShape: type === "tv" ? "landscape" : "poster" } };
     },
 
-    // AQUI: Limpeza total dos botões - Sem nome da lista a sujar
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":"); 
         const lIdx = parseInt(parts[1]); 
@@ -186,7 +164,6 @@ const addon = {
         if (!config) return { streams: [] };
 
         const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
-
         let streams = [];
         
         if (config.type === 'xtream') {
@@ -194,7 +171,7 @@ const addon = {
             streams.push({ 
                 name: channelName, // Canal em grande
                 url: `${b}/${config.user}/${config.pass}/${sId}`, 
-                title: `⚡ Direto TV`, // Título ultra limpo, sem link a sujar
+                title: `⚡ Direto TV`, // Limpo, sem link a sujar
                 behaviorHints: { notWebReady: true } 
             });
         } else {
@@ -208,9 +185,9 @@ const addon = {
                         let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                         if (cleanUrl.startsWith('http')) {
                             streams.push({ 
-                                name: channelName, // Canal em grande
+                                name: channelName, 
                                 url: cleanUrl, 
-                                title: `⚡ Direto TV`, // Título ultra limpo
+                                title: `⚡ Direto TV`, 
                                 behaviorHints: { notWebReady: true } 
                             });
                         }
@@ -220,9 +197,9 @@ const addon = {
         }
 
         streams.push({ 
-            name: channelName, // Canal em grande
+            name: channelName, 
             url: pUrl, 
-            title: `🔄 Proxy Estável`, // Título ultra limpo
+            title: `🔄 Proxy Estável`, 
             behaviorHints: { notWebReady: true } 
         });
         
