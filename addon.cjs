@@ -81,59 +81,50 @@ const addon = {
         } catch (e) { return null; }
     },
 
-    // FUNÇÃO AUXILIAR PARA PEGAR AS CATEGORIAS PARA O GÉNERO
-    async fetchGenres(config, type) {
-        const cacheKey = `genres_${config.url}_${type}`;
-        const cached = getCache(cacheKey); if (cached) return cached;
-        let genres = [];
-        try {
-            if (config.type === 'xtream') {
-                const b = config.url.trim().replace(/\/$/, "");
-                const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
-                const act = type === "tv" ? "get_live_categories" : (type === "movie" ? "get_vod_categories" : "get_series_categories");
-                const res = await axios.get(`${api}&action=${act}`, this.getAxiosOpts(config));
-                if (Array.isArray(res.data)) genres = res.data.map(c => c.category_name);
-            } else {
-                const auth = await this.authenticate(config);
-                if (auth) {
-                    const sType = type === "tv" ? "itv" : (type === "movie" ? "vod" : "series");
-                    const url = `${auth.api}type=${sType}&action=get_categories&token=${auth.token}&JsHttpRequest=1-0`;
-                    const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers }));
-                    const cats = res.data?.js || [];
-                    genres = cats.map(c => c.category_name || c.name);
-                }
-            }
-        } catch (e) {}
-        const final = genres.filter(Boolean);
-        setCache(cacheKey, final, 30);
-        return final;
-    },
-
     async getManifest(configBase64) {
         const lists = this.parseConfig(configBase64);
         const catalogs = [];
         
-        // 1. O NOME DO ADDON É O LINK (Substitui o XuloV Ultra Fast)
         let mainName = "XuloV Ultra Fast";
         if (lists.length > 0) mainName = lists[0].url || lists[0].name;
 
-        for (let i = 0; i < lists.length; i++) {
-            const l = lists[i];
+        // Itera sobre as listas para carregar as categorias/géneros no manifest
+        await Promise.all(lists.map(async (l, i) => {
             const listTitle = l.name || `Servidor ${i+1}`;
-            
-            // 2. BUSCA DINÂMICA DAS CATEGORIAS PARA APARECEREM NA ABA GENRE
-            const tvGenres = await this.fetchGenres(l, "tv");
-            const movieGenres = await this.fetchGenres(l, "movie");
-            const seriesGenres = await this.fetchGenres(l, "series");
+            let tvG = ["Predefinido"]; let movG = ["Predefinido"]; let serG = ["Predefinido"];
 
-            catalogs.push({ type: "tv", id: `cat_${i}`, name: `${listTitle} TV`, genres: tvGenres, extra: [{ name: "genre" }, { name: "skip" }] });
-            catalogs.push({ type: "movie", id: `mov_${i}`, name: `${listTitle} Filmes`, genres: movieGenres, extra: [{ name: "genre" }, { name: "skip" }] });
-            catalogs.push({ type: "series", id: `ser_${i}`, name: `${listTitle} Séries`, genres: seriesGenres, extra: [{ name: "genre" }, { name: "skip" }] });
-        }
-        
+            try {
+                if (l.type === 'xtream') {
+                    const b = l.url.trim().replace(/\/$/, "");
+                    const api = `${b}/player_api.php?username=${encodeURIComponent(l.user)}&password=${encodeURIComponent(l.pass)}`;
+                    const fetchCat = async (act) => {
+                        const r = await axios.get(`${api}&action=${act}`, this.getAxiosOpts(l, { timeout: 5000 }));
+                        return Array.isArray(r.data) ? r.data.map(g => g.category_name) : [];
+                    };
+                    const [c1, c2, c3] = await Promise.all([fetchCat('get_live_categories'), fetchCat('get_vod_categories'), fetchCat('get_series_categories')]);
+                    tvG = tvG.concat(c1); movG = movG.concat(c2); serG = serG.concat(c3);
+                } else {
+                    const auth = await this.authenticate(l);
+                    if (auth) {
+                        const fetchSt = async (t, a) => {
+                            const r = await axios.get(`${auth.api}type=${t}&action=${a}&token=${auth.token}&JsHttpRequest=1-0`, this.getAxiosOpts(l, { headers: auth.authData.headers, timeout: 5000 }));
+                            const items = r.data?.js?.data || r.data?.js || [];
+                            return (Array.isArray(items) ? items : Object.values(items)).map(g => g.title || g.name).filter(Boolean);
+                        };
+                        const [g1, g2, g3] = await Promise.all([fetchSt('itv', 'get_genres'), fetchSt('vod', 'get_categories'), fetchSt('series', 'get_categories')]);
+                        tvG = tvG.concat(g1); movG = movG.concat(g2); serG = serG.concat(g3);
+                    }
+                }
+            } catch(e) {}
+
+            catalogs.push({ type: "tv", id: `cat_${i}`, name: `${listTitle} TV`, extra: [{ name: "genre", options: tvG.filter(Boolean) }, { name: "skip" }] });
+            catalogs.push({ type: "movie", id: `mov_${i}`, name: `${listTitle} Filmes`, extra: [{ name: "genre", options: movG.filter(Boolean) }, { name: "skip" }] });
+            catalogs.push({ type: "series", id: `ser_${i}`, name: `${listTitle} Séries`, extra: [{ name: "genre", options: serG.filter(Boolean) }, { name: "skip" }] });
+        }));
+
         return { 
             id: "org.xulov.stalker", 
-            version: "5.6.0", 
+            version: "5.7.0", 
             name: mainName, 
             resources: ["catalog", "stream", "meta"], 
             types: ["tv", "movie", "series"], 
@@ -143,30 +134,28 @@ const addon = {
     },
 
     async getCatalog(type, id, extra, configBase64) {
-        const skip = parseInt(extra.skip) || 0;
-        const genre = extra.genre;
         const lists = this.parseConfig(configBase64);
         const lIdx = parseInt(id.split('_')[1]);
         const config = lists[lIdx]; if (!config) return { metas: [] };
-        
+        const skip = parseInt(extra.skip) || 0;
+        const genre = extra.genre;
         let metas = [];
+
         try {
             if (config.type === 'xtream') {
                 const b = config.url.trim().replace(/\/$/, "");
                 const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
                 let act = type === "tv" ? "get_live_streams" : (type === "movie" ? "get_vod_streams" : "get_series");
-                let url = `${api}&action=${act}`;
                 
-                if (genre) {
+                if (genre && genre !== "Predefinido") {
                     const catAct = type === "tv" ? "get_live_categories" : (type === "movie" ? "get_vod_categories" : "get_series_categories");
                     const catRes = await axios.get(`${api}&action=${catAct}`, this.getAxiosOpts(config));
-                    const foundCat = (catRes.data || []).find(c => c.category_name === genre);
-                    if (foundCat) url += `&category_id=${foundCat.category_id}`;
+                    const found = (catRes.data || []).find(c => c.category_name === genre);
+                    if (found) act += `&category_id=${found.category_id}`;
                 }
 
-                const res = await axios.get(url, this.getAxiosOpts(config));
-                let data = Array.isArray(res.data) ? res.data : [];
-                metas = data.slice(skip, skip + 120).map(item => ({
+                const res = await axios.get(`${api}&action=${act}`, this.getAxiosOpts(config));
+                metas = (Array.isArray(res.data) ? res.data : []).slice(skip, skip + 120).map(item => ({
                     id: `xlv:${lIdx}:${item.stream_id || item.series_id}${type === 'movie' ? '.' + (item.container_extension || 'mp4') : ''}:${encodeURIComponent(item.name || item.title)}`,
                     name: item.name || item.title, type, poster: item.stream_icon || item.cover, posterShape: type === "tv" ? "landscape" : "poster"
                 }));
@@ -174,21 +163,19 @@ const addon = {
                 const auth = await this.authenticate(config);
                 if (auth) {
                     const sType = type === "tv" ? "itv" : (type === "movie" ? "vod" : "series");
-                    const page = Math.floor(skip / 14) + 1;
-                    let url = `${auth.api}type=${sType}&action=get_ordered_list&p=${page}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
-                    
-                    if (genre) {
-                        const catUrl = `${auth.api}type=${sType}&action=get_categories&token=${auth.token}&JsHttpRequest=1-0`;
-                        const catRes = await axios.get(catUrl, this.getAxiosOpts(config, { headers: auth.authData.headers }));
-                        const cats = catRes.data?.js || [];
-                        const found = cats.find(c => (c.category_name || c.name) === genre);
-                        if (found) url += `&category=${found.id}`;
+                    let catParam = "";
+                    if (genre && genre !== "Predefinido") {
+                        const cAct = sType === "itv" ? "get_genres" : "get_categories";
+                        const cRes = await axios.get(`${auth.api}type=${sType}&action=${cAct}&token=${auth.token}&JsHttpRequest=1-0`, this.getAxiosOpts(config, { headers: auth.authData.headers }));
+                        const cats = cRes.data?.js?.data || cRes.data?.js || [];
+                        const found = (Array.isArray(cats) ? cats : Object.values(cats)).find(c => (c.title || c.name) === genre);
+                        if (found) catParam = sType === "itv" ? `&genre=${found.id}` : `&category=${found.id}`;
                     }
-
+                    const page = Math.floor(skip / 14) + 1;
+                    const url = `${auth.api}type=${sType}&action=get_ordered_list${catParam}&p=${page}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
                     const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers }));
                     const raw = res.data?.js?.data || res.data?.js || [];
-                    const items = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd));
-                    metas = items.map(m => ({
+                    metas = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => ({
                         id: `xlv:${lIdx}:${encodeURIComponent(m.cmd || m.id)}:${encodeURIComponent(m.name || m.title)}`,
                         name: m.name || m.title, type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
                     }));
@@ -220,7 +207,7 @@ const addon = {
             streams.push({ 
                 name: chName, 
                 url: `${b}/${config.user}/${config.pass}/${sId}`, 
-                title: `⚡ Direto TV`, // 3. LINK REMOVIDO DO TÍTULO (Fica limpo)
+                title: `⚡ Direto TV`, 
                 behaviorHints: { notWebReady: true } 
             });
         } else {
