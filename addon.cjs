@@ -85,23 +85,22 @@ const addon = {
         const lists = this.parseConfig(configBase64);
         const catalogs = [];
         
-        // 1. Define o Nome do Addon no topo como o Link/Nome da lista
-        let mainAddonName = "XuloV Ultra Fast";
-        if (lists.length > 0) {
-            mainAddonName = lists[0].name || lists[0].url; 
-        }
+        // Nome do Addon no topo (Ocupa o lugar de XuloV Ultra Fast)
+        let mainName = "XuloV Ultra Fast";
+        if (lists.length > 0) mainName = lists[0].name || lists[0].url;
 
         lists.forEach((l, i) => {
-            // 2. DEVOLVE AS CATEGORIAS (Canais, Filmes, Séries) ao menu lateral
-            catalogs.push({ type: "tv", id: `cat_${i}`, name: "Canais TV", extra: [{ name: "genre" }, { name: "skip" }] });
-            catalogs.push({ type: "movie", id: `mov_${i}`, name: "Filmes 🎬", extra: [{ name: "genre" }, { name: "skip" }] });
-            catalogs.push({ type: "series", id: `ser_${i}`, name: "Séries 🍿", extra: [{ name: "genre" }, { name: "skip" }] });
+            const listTitle = l.name || `Lista ${i+1}`;
+            // Recupera a escolha da lista no menu lateral (Canais, Filmes, Séries por servidor)
+            catalogs.push({ type: "tv", id: `cat_${i}`, name: `${listTitle} TV`, extra: [{ name: "genre" }, { name: "skip" }] });
+            catalogs.push({ type: "movie", id: `mov_${i}`, name: `${listTitle} Filmes`, extra: [{ name: "genre" }, { name: "skip" }] });
+            catalogs.push({ type: "series", id: `ser_${i}`, name: `${listTitle} Séries`, extra: [{ name: "genre" }, { name: "skip" }] });
         });
         
         return { 
             id: "org.xulov.stalker", 
-            version: "5.5.0", 
-            name: mainAddonName, 
+            version: "5.5.5", 
+            name: mainName, 
             resources: ["catalog", "stream", "meta"], 
             types: ["tv", "movie", "series"], 
             idPrefixes: ["xlv:"], 
@@ -121,8 +120,20 @@ const addon = {
             if (config.type === 'xtream') {
                 const b = config.url.trim().replace(/\/$/, "");
                 const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
+                
+                // DEVOLVE AS CATEGORIAS AO GÉNERO
+                let catAct = type === "tv" ? "get_live_categories" : (type === "movie" ? "get_vod_categories" : "get_series_categories");
+                const catRes = await axios.get(`${api}&action=${catAct}`, this.getAxiosOpts(config));
+                const categories = Array.isArray(catRes.data) ? catRes.data : [];
+
                 let act = type === "tv" ? "get_live_streams" : (type === "movie" ? "get_vod_streams" : "get_series");
-                const res = await axios.get(`${api}&action=${act}`, this.getAxiosOpts(config));
+                let url = `${api}&action=${act}`;
+                if (genre) {
+                    const foundCat = categories.find(c => c.category_name === genre);
+                    if (foundCat) url += `&category_id=${foundCat.category_id}`;
+                }
+
+                const res = await axios.get(url, this.getAxiosOpts(config));
                 let data = Array.isArray(res.data) ? res.data : [];
                 metas = data.slice(skip, skip + 120).map(item => ({
                     id: `xlv:${lIdx}:${item.stream_id || item.series_id}${type === 'movie' ? '.' + (item.container_extension || 'mp4') : ''}:${encodeURIComponent(item.name || item.title)}`,
@@ -134,6 +145,15 @@ const addon = {
                     const sType = type === "tv" ? "itv" : (type === "movie" ? "vod" : "series");
                     const page = Math.floor(skip / 14) + 1;
                     let url = `${auth.api}type=${sType}&action=get_ordered_list&p=${page}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
+                    
+                    if (genre) {
+                        const catUrl = `${auth.api}type=${sType}&action=get_categories&token=${auth.token}&JsHttpRequest=1-0`;
+                        const catRes = await axios.get(catUrl, this.getAxiosOpts(config, { headers: auth.authData.headers }));
+                        const cats = catRes.data?.js || [];
+                        const found = cats.find(c => (c.category_name || c.name) === genre);
+                        if (found) url += `&category=${found.id}`;
+                    }
+
                     const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers }));
                     const raw = res.data?.js?.data || res.data?.js || [];
                     const items = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd));
@@ -157,11 +177,9 @@ const addon = {
         const parts = id.split(":"); 
         const lIdx = parseInt(parts[1]); 
         const sId = parts[2];
-        const channelName = decodeURIComponent(parts[3] || "Canal");
-        
+        const chName = decodeURIComponent(parts[3] || "Canal");
         const lists = this.parseConfig(configBase64); 
-        const config = lists[lIdx]; 
-        if (!config) return { streams: [] };
+        const config = lists[lIdx]; if (!config) return { streams: [] };
 
         const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
         let streams = [];
@@ -169,9 +187,9 @@ const addon = {
         if (config.type === 'xtream') {
             const b = config.url.trim().replace(/\/$/, "");
             streams.push({ 
-                name: channelName, // Canal em grande
+                name: chName, 
                 url: `${b}/${config.user}/${config.pass}/${sId}`, 
-                title: `⚡ Direto TV`, // Limpo, sem link a sujar
+                title: `⚡ Direto TV`, // Limpo, sem link
                 behaviorHints: { notWebReady: true } 
             });
         } else {
@@ -184,25 +202,13 @@ const addon = {
                     if (typeof cmdUrl === 'string') {
                         let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                         if (cleanUrl.startsWith('http')) {
-                            streams.push({ 
-                                name: channelName, 
-                                url: cleanUrl, 
-                                title: `⚡ Direto TV`, 
-                                behaviorHints: { notWebReady: true } 
-                            });
+                            streams.push({ name: chName, url: cleanUrl, title: `⚡ Direto TV`, behaviorHints: { notWebReady: true } });
                         }
                     }
                 }
             } catch(e) {}
         }
-
-        streams.push({ 
-            name: channelName, 
-            url: pUrl, 
-            title: `🔄 Proxy Estável`, 
-            behaviorHints: { notWebReady: true } 
-        });
-        
+        streams.push({ name: chName, url: pUrl, title: `🔄 Proxy Estável`, behaviorHints: { notWebReady: true } });
         return { streams };
     }
 };
