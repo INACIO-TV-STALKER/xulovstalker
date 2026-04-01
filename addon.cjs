@@ -240,19 +240,28 @@ const addon = {
     },
 
     async getStreams(type, id, configBase64, host) {
-        const parts = id.split(":"); const lIdx = parseInt(parts[1]); const sId = parts[2];
-        const lists = this.parseConfig(configBase64); const config = lists[lIdx];
+        // 🔥 EXTRAÇÃO CIRÚRGICA DE DADOS
+        const parts = id.split(":"); 
+        const lIdx = parseInt(parts[1]); 
+        const sId = parts[2];
+        const channelName = decodeURIComponent(parts[3] || "Canal");
         
-        // RECUPERA O NOME DA LISTA PARA ISOLAR OS BOTÕES NO STREMIO
+        const lists = this.parseConfig(configBase64); 
+        const config = lists[lIdx];
+        
+        // Define o NOME DA LISTA (vai aparecer na aba azul ao lado do Tudo e ao lado do ícone play)
         const listName = config.name || `Lista ${lIdx + 1}`;
         
         const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
 
-        if (type !== 'tv') return { streams: [{ url: pUrl, title: `${listName}\n🎬 Reproduzir (Proxy)`, behaviorHints: { notWebReady: true } }] };
+        if (type !== 'tv') return { streams: [{ name: listName, url: pUrl, title: `${channelName}\n🎬 Reproduzir (Proxy)`, behaviorHints: { notWebReady: true } }] };
 
         if (config?.type === 'xtream') {
             const b = config.url.trim().replace(/\/$/, "");
-            return { streams: [{ url: `${b}/${config.user}/${config.pass}/${sId}`, title: `${listName}\n📺 Directo`, behaviorHints: { notWebReady: true } }, { url: pUrl, title: `${listName}\n🛡️ Proxy`, behaviorHints: { notWebReady: true } }] };
+            return { streams: [
+                { name: listName, url: `${b}/${config.user}/${config.pass}/${sId}`, title: `${channelName}\n📺 Directo`, behaviorHints: { notWebReady: true } }, 
+                { name: listName, url: pUrl, title: `${channelName}\n🛡️ Proxy`, behaviorHints: { notWebReady: true } }
+            ] };
         }
 
         let streams = [];
@@ -264,12 +273,12 @@ const addon = {
                 let cmdUrl = res.data?.js?.cmd || res.data?.js;
                 if (typeof cmdUrl === 'string') {
                     let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-                    if (cleanUrl.startsWith('http')) streams.push({ url: cleanUrl, title: `${listName}\n⚡ Directo TV`, behaviorHints: { notWebReady: true } });
+                    if (cleanUrl.startsWith('http')) streams.push({ name: listName, url: cleanUrl, title: `${channelName}\n⚡ Directo TV`, behaviorHints: { notWebReady: true } });
                 }
             }
         } catch(e) {}
 
-        streams.push({ url: pUrl, title: `${listName}\n🔄 Proxy Estável`, behaviorHints: { notWebReady: true } });
+        streams.push({ name: listName, url: pUrl, title: `${channelName}\n🔄 Proxy Estável`, behaviorHints: { notWebReady: true } });
         return { streams };
     }
 };
