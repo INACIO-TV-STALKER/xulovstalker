@@ -63,13 +63,11 @@ const getStalkerAuth = function(config, token) {
 };
 
 const addon = {
-    // 🔥 HELPER PROFISSIONAL ATUALIZADO: Agora suporta SOCKS5 e HTTP
     getAxiosOpts(config, extraOpts = {}) {
         let opts = { ...extraOpts };
         if (config && config.proxy) {
             const proxyStr = config.proxy.trim();
             if (proxyStr.startsWith('socks')) {
-                // Injeta o Agente SOCKS5 para a IPVanish/Outras
                 const agent = new SocksProxyAgent(proxyStr);
                 opts.httpAgent = agent;
                 opts.httpsAgent = agent;
@@ -111,7 +109,6 @@ const addon = {
 
         try {
             var hUrl = url + "?type=stb&action=handshake&sn=" + authData.sn + "&device_id=" + authData.id1 + "&JsHttpRequest=1-0";
-            // Aplica Proxy no Handshake com Timeout de 10s
             var res = await axios.get(hUrl, this.getAxiosOpts(config, { headers: authData.headers, timeout: 10000 }));
             var token = res.data?.js?.token || res.data?.token || null;
 
@@ -214,7 +211,6 @@ const addon = {
         return { metas };
     },
 
-    // ---------- AQUI A MAGIA DAS SÉRIES PARA STALKERS -----------
     async getMeta(type, id, configBase64) {
         const parts = id.split(":"); 
         const lIdx = parseInt(parts[1]); 
@@ -239,7 +235,7 @@ const addon = {
                                     id: `xlv:${lIdx}:${ep.id}.${ep.container_extension || 'mp4'}:${encodeURIComponent(ep.title || name)}`,
                                     title: ep.title || `Episódio ${ep.episode_num}`,
                                     season: parseInt(seasonNum),
-                                    episode: parseInt(ep.episode_num) // <-- O Stremio Exige "episode" e não "number"
+                                    episode: parseInt(ep.episode_num)
                                 });
                             });
                         });
@@ -247,54 +243,84 @@ const addon = {
                     } else {
                         const auth = await addon.authenticate(config);
                         if (auth) {
-                            // Para Stalker: Verifica a estrutura como mostraste no vídeo (Pastas de Temporadas)
+                            // ⚠️ NOVA LÓGICA STALKER RIGOROSA AQUI ⚠️
                             const url = `${auth.api}type=series&action=get_ordered_list&category=${sId}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
                             const res = await axios.get(url, addon.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 }));
                             const raw = res.data?.js?.data || res.data?.js || [];
                             const list = Array.isArray(raw) ? raw : Object.values(raw);
                             
                             let videos = [];
-                            // Verifica se a lista tem pastas (Temporadas)
-                            const hasFolders = list.some(i => i && (!i.cmd || i.is_dir));
                             
-                            if (hasFolders && list.length > 0) {
-                                // Há Pastas! Entra em cada uma para sacar os episódios (Como no vídeo)
-                                const seasonPromises = list.filter(i => i && i.id).map(async (seasonFolder) => {
-                                    const sTitle = seasonFolder.name || seasonFolder.title || "";
+                            // Em vez de adivinhar, perguntamos ao servidor o que é estritamente uma pasta (is_dir = 1)
+                            const folders = list.filter(i => i && (i.is_dir == 1 || i.is_dir === "1"));
+                            const files = list.filter(i => i && i.is_dir != 1 && i.is_dir !== "1" && (i.cmd || i.id));
+                            
+                            if (folders.length > 0) {
+                                // 1. Há Pastas (Temporadas)! Entramos em cada uma
+                                const seasonPromises = folders.map(async (folder, fIdx) => {
+                                    const sTitle = folder.name || folder.title || "";
                                     const sMatch = sTitle.match(/\d+/);
-                                    const sNum = sMatch ? parseInt(sMatch[0]) : 1;
+                                    const sNum = sMatch ? parseInt(sMatch[0]) : (fIdx + 1);
                                     
-                                    const epUrl = `${auth.api}type=series&action=get_ordered_list&category=${seasonFolder.id}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
+                                    const epUrl = `${auth.api}type=series&action=get_ordered_list&category=${folder.id}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
                                     try {
                                         const epRes = await axios.get(epUrl, addon.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 }));
                                         let epRaw = epRes.data?.js?.data || epRes.data?.js || [];
                                         let epList = Array.isArray(epRaw) ? epRaw : Object.values(epRaw);
                                         
-                                        return epList.filter(i => i && i.cmd).map((ep, eIdx) => {
+                                        // Extraímos apenas os ficheiros lá de dentro
+                                        return epList.filter(i => i && i.is_dir != 1 && i.is_dir !== "1" && (i.cmd || i.id)).map((ep, eIdx) => {
                                             const epTitle = ep.name || ep.title || `Episódio ${eIdx + 1}`;
-                                            const eMatch = epTitle.match(/[Ee](\d+)/) || epTitle.match(/\d+/);
-                                            const eNum = eMatch ? parseInt(eMatch[1] || eMatch[0]) : (eIdx + 1);
+                                            let finalS = sNum;
+                                            let finalE = eIdx + 1;
+                                            
+                                            // Caso o nome seja algo como S01E02, extraímos os números para ser perfeito
+                                            const seMatch = epTitle.match(/[Ss](\d+)[^0-9]*[Ee](\d+)/i) || epTitle.match(/(\d+)[Xx](\d+)/);
+                                            if (seMatch) {
+                                                finalS = parseInt(seMatch[1]);
+                                                finalE = parseInt(seMatch[2]);
+                                            } else {
+                                                // Tenta encontrar "Episódio X" ou "X."
+                                                const eMatch = epTitle.match(/[Ee]p?(?:is[oó]dio)?\s*(\d+)/i) || epTitle.match(/^(\d+)\./);
+                                                if (eMatch) finalE = parseInt(eMatch[1]);
+                                            }
+
+                                            const playId = ep.cmd || ep.id;
+
                                             return {
-                                                id: `xlv:${lIdx}:${encodeURIComponent(ep.cmd || ep.id)}:${encodeURIComponent(epTitle)}`,
+                                                id: `xlv:${lIdx}:${encodeURIComponent(playId)}:${encodeURIComponent(epTitle)}`,
                                                 title: epTitle,
-                                                season: sNum,
-                                                episode: eNum // <-- Stremio usa "episode"
+                                                season: finalS,
+                                                episode: finalE
                                             };
                                         });
                                     } catch(e) { return []; }
                                 });
                                 const seasonsData = await Promise.all(seasonPromises);
                                 videos = seasonsData.flat();
-                            } else {
-                                // Não há pastas, estão todos juntos
-                                videos = list.filter(i => i && (i.id || i.cmd)).map((m, index) => {
-                                    const epTitle = m.name || m.title || `Episódio ${index + 1}`;
-                                    const match = epTitle.match(/[Ss](\d+)\s?[Ee](\d+)/) || epTitle.match(/(\d+)[xX](\d+)/);
+                            } else if (files.length > 0) {
+                                // 2. Não há pastas, os episódios estão todos à solta (Acontece em minisséries)
+                                videos = files.map((ep, index) => {
+                                    const epTitle = ep.name || ep.title || `Episódio ${index + 1}`;
+                                    let sNum = 1;
+                                    let eNum = index + 1;
+
+                                    const seMatch = epTitle.match(/[Ss](\d+)[^0-9]*[Ee](\d+)/i) || epTitle.match(/(\d+)[Xx](\d+)/);
+                                    if (seMatch) {
+                                        sNum = parseInt(seMatch[1]);
+                                        eNum = parseInt(seMatch[2]);
+                                    } else {
+                                        const eMatch = epTitle.match(/[Ee]p?(?:is[oó]dio)?\s*(\d+)/i) || epTitle.match(/^(\d+)\./);
+                                        if (eMatch) eNum = parseInt(eMatch[1]);
+                                    }
+
+                                    const playId = ep.cmd || ep.id;
+
                                     return {
-                                        id: `xlv:${lIdx}:${encodeURIComponent(m.cmd || m.id)}:${encodeURIComponent(epTitle)}`,
+                                        id: `xlv:${lIdx}:${encodeURIComponent(playId)}:${encodeURIComponent(epTitle)}`,
                                         title: epTitle,
-                                        season: match ? parseInt(match[1]) : 1,
-                                        episode: match ? parseInt(match[2]) : (index + 1) // <-- Stremio usa "episode"
+                                        season: sNum,
+                                        episode: eNum
                                     };
                                 });
                             }
@@ -309,12 +335,11 @@ const addon = {
         return { meta };
     },
 
-    // ---------- AQUI A LIMPEZA DOS BOTÕES (NOME EM GRANDE, SEM LINKS) -----------
     async getStreams(type, id, configBase64, host) {
         const parts = id.split(":"); 
         const lIdx = parseInt(parts[1]); 
         const sId = parts[2];
-        const name = decodeURIComponent(parts[3] || "Stream"); // Adicionado para limpar os botões
+        const name = decodeURIComponent(parts[3] || "Stream"); 
         const lists = this.parseConfig(configBase64); const config = lists[lIdx];
         const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
 
