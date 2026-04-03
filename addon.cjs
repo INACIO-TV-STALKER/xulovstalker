@@ -13,10 +13,15 @@ function setCache(key, data, ttlMinutes = 30) {
 
 const getStalkerAuth = function(config, token) {
     const mac = (config.mac || "").toUpperCase();
+
     const seed = crypto.createHash('md5').update(mac || 'vazio').digest('hex').toUpperCase();
+
+    // Se não preencheres nada no painel, ele usa o gerado automaticamente.
     const sn  = config.sn  || seed.substring(0, 14); 
     const id1 = config.id1 || seed; 
     const sig = config.sig || "";
+
+    // 2. MUDAR A IDENTIDADE DEPENDENDO DA BOX ESCOLHIDA
     const model = config.model || "MAG250";
     let ua = "";
     let xua = "";
@@ -34,7 +39,7 @@ const getStalkerAuth = function(config, token) {
             ua = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 27211 Safari/533.3";
             xua = `Model: MAG256; SW: 2.20.05-256; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
             break;
-        default:
+        default: // MAG250 (Padrão)
             ua = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3";
             xua = `Model: MAG250; SW: 0.2.18-r14; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
     }
@@ -42,21 +47,41 @@ const getStalkerAuth = function(config, token) {
     let cookie = `mac=${encodeURIComponent(mac)}; stb_lang=en; timezone=Europe/Lisbon;`;
     if (token) cookie += ` access_token=${token};`;
 
-    return { sn, id1, sig, headers: { "User-Agent": ua, "X-User-Agent": xua, "Cookie": cookie, "Referer": config.url.replace(/\/$/, "") + "/c/", "Accept": "*/*", "Connection": "Keep-Alive" } };
+    return {
+        sn: sn,
+        id1: id1,
+        sig: sig,
+        headers: {
+            "User-Agent": ua,
+            "X-User-Agent": xua,
+            "Cookie": cookie,
+            "Referer": config.url.replace(/\/$/, "") + "/c/",
+            "Accept": "*/*",
+            "Connection": "Keep-Alive"
+        }
+    };
 };
 
 const addon = {
+    // 🔥 HELPER PROFISSIONAL ATUALIZADO: Agora suporta SOCKS5 e HTTP
     getAxiosOpts(config, extraOpts = {}) {
         let opts = { ...extraOpts };
         if (config && config.proxy) {
             const proxyStr = config.proxy.trim();
             if (proxyStr.startsWith('socks')) {
+                // Injeta o Agente SOCKS5 para a IPVanish/Outras
                 const agent = new SocksProxyAgent(proxyStr);
-                opts.httpAgent = agent; opts.httpsAgent = agent;
+                opts.httpAgent = agent;
+                opts.httpsAgent = agent;
             } else if (proxyStr.startsWith('http')) {
                 try {
                     const p = new URL(proxyStr);
-                    opts.proxy = { protocol: p.protocol.replace(':', ''), host: p.hostname, port: parseInt(p.port), auth: p.username ? { username: decodeURIComponent(p.username), password: decodeURIComponent(p.password) } : undefined };
+                    opts.proxy = {
+                        protocol: p.protocol.replace(':', ''),
+                        host: p.hostname,
+                        port: parseInt(p.port),
+                        auth: p.username ? { username: decodeURIComponent(p.username), password: decodeURIComponent(p.password) } : undefined
+                    };
                 } catch(e) {}
             }
         }
@@ -68,27 +93,38 @@ const addon = {
             const decoded = Buffer.from(decodeURIComponent(configBase64), 'base64').toString('utf8');
             const data = JSON.parse(decoded);
             return data.lists || []; 
-        } catch (e) { return []; }
+        } 
+        catch (e) { return []; }
     },
 
     async authenticate(config) {
         if (config.type === 'xtream') return true;
+
         const cacheKey = `auth_${config.url}_${config.mac || 'nomac'}`;
-        const cachedAuth = getCache(cacheKey); if (cachedAuth) return cachedAuth;
+        const cachedAuth = getCache(cacheKey);
+        if (cachedAuth) return cachedAuth;
+
         var authData = getStalkerAuth(config, null);
         var baseUrl = config.url.trim().replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
         if (!baseUrl.endsWith('/')) baseUrl += '/';
         var url = baseUrl + "portal.php";
+
         try {
             var hUrl = url + "?type=stb&action=handshake&sn=" + authData.sn + "&device_id=" + authData.id1 + "&JsHttpRequest=1-0";
+            // Aplica Proxy no Handshake com Timeout de 10s
             var res = await axios.get(hUrl, this.getAxiosOpts(config, { headers: authData.headers, timeout: 10000 }));
             var token = res.data?.js?.token || res.data?.token || null;
+
             if (token) {
                 const finalAuth = { token: token, api: url + "?", authData: getStalkerAuth(config, token) };
-                setCache(cacheKey, finalAuth, 60); return finalAuth;
+                setCache(cacheKey, finalAuth, 60);
+                return finalAuth;
             }
             return null;
-        } catch (e) { return null; }
+        } catch (e) { 
+            console.error("[AUTH ERROR] Falha no login Stalker:", e.message);
+            return null; 
+        }
     },
 
     async getManifest(configBase64) {
@@ -117,13 +153,13 @@ const addon = {
                         tvG = tvG.concat(g1); movG = movG.concat(g2); serG = serG.concat(g3);
                     }
                 }
-            } catch(e) {}
-            // AJUSTE: Nome da lista aparece aqui no catálogo (Cabeçalho do Stremio)
+            } catch(e) { console.error(`[MANIFEST ERROR] Falha ao carregar lista ${i}:`, e.message); }
             catalogs.push({ type: "tv", id: `cat_${i}`, name: l.name || `Lista ${i+1}`, extra: [{ name: "genre", options: tvG.filter(Boolean) }, { name: "skip" }] });
-            catalogs.push({ type: "movie", id: `mov_${i}`, name: l.name || `Lista ${i+1}`, extra: [{ name: "genre", options: movG.filter(Boolean) }, { name: "skip" }] });
-            catalogs.push({ type: "series", id: `ser_${i}`, name: l.name || `Lista ${i+1}`, extra: [{ name: "genre", options: serG.filter(Boolean) }, { name: "skip" }] });
+            catalogs.push({ type: "movie", id: `mov_${i}`, name: `${l.name || `Lista ${i+1}`} 🎬`, extra: [{ name: "genre", options: movG.filter(Boolean) }, { name: "skip" }] });
+            catalogs.push({ type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿`, extra: [{ name: "genre", options: serG.filter(Boolean) }, { name: "skip" }] });
         }));
-        const m = { id: "org.xulov.stalker", version: "6.1.0", name: "XuloV Hub", resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
+        const addonName = lists.map(l => l.name).filter(Boolean).join(" + ") || "XuloV Hub";
+        const m = { id: "org.xulov.stalker", version: "5.3.0", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
         setCache(cacheKey, m, 60); return m;
     },
 
@@ -161,8 +197,11 @@ const addon = {
                         const cat = (Array.isArray(cats) ? cats : Object.values(cats)).find(c => (c.title || c.name) === extra.genre);
                         if (cat) catP = sType === "itv" ? `&genre=${cat.id}` : `&category=${cat.id}`;
                     }
+
+                    let sAct = "get_ordered_list"; 
+
                     const page = Math.floor(skip / 14) + 1;
-                    const url = `${auth.api}type=${sType}&action=get_ordered_list${catP}&p=${page}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
+                    const url = `${auth.api}type=${sType}&action=${sAct}${catP}&p=${page}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
                     const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 }));
                     const raw = res.data?.js?.data || res.data?.js || [];
                     metas = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => ({
@@ -171,12 +210,14 @@ const addon = {
                     }));
                 }
             }
-        } catch (e) {}
+        } catch (e) { console.error("[CATALOG ERROR]", e.message); }
         return { metas };
     },
 
+    // ---------- AQUI A MAGIA DAS SÉRIES PARA STALKERS -----------
     async getMeta(type, id, configBase64) {
-        const parts = id.split(":"); const lIdx = parseInt(parts[1]); 
+        const parts = id.split(":"); 
+        const lIdx = parseInt(parts[1]); 
         const sId = parts[2] ? decodeURIComponent(parts[2]) : "";
         const name = decodeURIComponent(parts[3] || "Conteúdo");
         let meta = { id, type, name, posterShape: type === "tv" ? "landscape" : "poster" };
@@ -197,45 +238,86 @@ const addon = {
                                 videos.push({
                                     id: `xlv:${lIdx}:${ep.id}.${ep.container_extension || 'mp4'}:${encodeURIComponent(ep.title || name)}`,
                                     title: ep.title || `Episódio ${ep.episode_num}`,
-                                    season: parseInt(seasonNum), number: parseInt(ep.episode_num)
+                                    season: parseInt(seasonNum),
+                                    episode: parseInt(ep.episode_num) // <-- O Stremio Exige "episode" e não "number"
                                 });
                             });
                         });
-                        meta.videos = videos.sort((a, b) => a.season - b.season || a.number - b.number);
+                        meta.videos = videos.sort((a, b) => a.season - b.season || a.episode - b.episode);
                     } else {
                         const auth = await addon.authenticate(config);
                         if (auth) {
-                            // DINÂMICO: Trata o ID da série como pasta de episódios
+                            // Para Stalker: Verifica a estrutura como mostraste no vídeo (Pastas de Temporadas)
                             const url = `${auth.api}type=series&action=get_ordered_list&category=${sId}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
                             const res = await axios.get(url, addon.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 }));
                             const raw = res.data?.js?.data || res.data?.js || [];
                             const list = Array.isArray(raw) ? raw : Object.values(raw);
-                            meta.videos = list.filter(i => i && (i.id || i.cmd)).map((m, index) => {
-                                const epTitle = m.name || m.title || `Episódio ${index + 1}`;
-                                const match = epTitle.match(/[Ss](\d+)\s?[Ee](\d+)/) || epTitle.match(/(\d+)[xX](\d+)/);
-                                return {
-                                    id: `xlv:${lIdx}:${encodeURIComponent(m.cmd || m.id)}:${encodeURIComponent(epTitle)}`,
-                                    title: epTitle,
-                                    season: match ? parseInt(match[1]) : 1,
-                                    number: match ? parseInt(match[2]) : (index + 1)
-                                };
-                            });
+                            
+                            let videos = [];
+                            // Verifica se a lista tem pastas (Temporadas)
+                            const hasFolders = list.some(i => i && (!i.cmd || i.is_dir));
+                            
+                            if (hasFolders && list.length > 0) {
+                                // Há Pastas! Entra em cada uma para sacar os episódios (Como no vídeo)
+                                const seasonPromises = list.filter(i => i && i.id).map(async (seasonFolder) => {
+                                    const sTitle = seasonFolder.name || seasonFolder.title || "";
+                                    const sMatch = sTitle.match(/\d+/);
+                                    const sNum = sMatch ? parseInt(sMatch[0]) : 1;
+                                    
+                                    const epUrl = `${auth.api}type=series&action=get_ordered_list&category=${seasonFolder.id}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
+                                    try {
+                                        const epRes = await axios.get(epUrl, addon.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 }));
+                                        let epRaw = epRes.data?.js?.data || epRes.data?.js || [];
+                                        let epList = Array.isArray(epRaw) ? epRaw : Object.values(epRaw);
+                                        
+                                        return epList.filter(i => i && i.cmd).map((ep, eIdx) => {
+                                            const epTitle = ep.name || ep.title || `Episódio ${eIdx + 1}`;
+                                            const eMatch = epTitle.match(/[Ee](\d+)/) || epTitle.match(/\d+/);
+                                            const eNum = eMatch ? parseInt(eMatch[1] || eMatch[0]) : (eIdx + 1);
+                                            return {
+                                                id: `xlv:${lIdx}:${encodeURIComponent(ep.cmd || ep.id)}:${encodeURIComponent(epTitle)}`,
+                                                title: epTitle,
+                                                season: sNum,
+                                                episode: eNum // <-- Stremio usa "episode"
+                                            };
+                                        });
+                                    } catch(e) { return []; }
+                                });
+                                const seasonsData = await Promise.all(seasonPromises);
+                                videos = seasonsData.flat();
+                            } else {
+                                // Não há pastas, estão todos juntos
+                                videos = list.filter(i => i && (i.id || i.cmd)).map((m, index) => {
+                                    const epTitle = m.name || m.title || `Episódio ${index + 1}`;
+                                    const match = epTitle.match(/[Ss](\d+)\s?[Ee](\d+)/) || epTitle.match(/(\d+)[xX](\d+)/);
+                                    return {
+                                        id: `xlv:${lIdx}:${encodeURIComponent(m.cmd || m.id)}:${encodeURIComponent(epTitle)}`,
+                                        title: epTitle,
+                                        season: match ? parseInt(match[1]) : 1,
+                                        episode: match ? parseInt(match[2]) : (index + 1) // <-- Stremio usa "episode"
+                                    };
+                                });
+                            }
+                            meta.videos = videos;
                         }
                     }
                 }
-            } catch (e) {}
+            } catch (e) {
+                console.error("[META ERROR] Falha ao carregar episodios:", e.message);
+            }
         }
         return { meta };
     },
 
+    // ---------- AQUI A LIMPEZA DOS BOTÕES (NOME EM GRANDE, SEM LINKS) -----------
     async getStreams(type, id, configBase64, host) {
-        const parts = id.split(":"); const lIdx = parseInt(parts[1]); const sId = parts[2];
-        const name = decodeURIComponent(parts[3] || "Stream");
+        const parts = id.split(":"); 
+        const lIdx = parseInt(parts[1]); 
+        const sId = parts[2];
+        const name = decodeURIComponent(parts[3] || "Stream"); // Adicionado para limpar os botões
         const lists = this.parseConfig(configBase64); const config = lists[lIdx];
         const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
 
-        // AJUSTE DE LAYOUT: O nome do canal vai no campo "name" (letras grandes)
-        // O campo "title" leva apenas a informação do modo (Directo/Proxy) em letras pequenas
         if (type === 'movie' || type === 'series') {
             return { streams: [{ name: name, url: pUrl, title: `🎬 Reproduzir (Proxy Estável)`, behaviorHints: { notWebReady: true } }] };
         }
@@ -243,16 +325,17 @@ const addon = {
         if (config?.type === 'xtream') {
             const b = config.url.trim().replace(/\/$/, "");
             return { streams: [
-                { name: name, url: `${b}/${config.user}/${config.pass}/${sId}`, title: `⚡ Directo`, behaviorHints: { notWebReady: true } },
-                { name: name, url: pUrl, title: `🛡️ Proxy`, behaviorHints: { notWebReady: true } }
-            ]};
+                { name: name, url: `${b}/${config.user}/${config.pass}/${sId}`, title: `⚡ Directo TV`, behaviorHints: { notWebReady: true } }, 
+                { name: name, url: pUrl, title: `🔄 Proxy Estável`, behaviorHints: { notWebReady: true } }
+            ] };
         }
 
         let streams = [];
         try {
             const auth = await addon.authenticate(config);
             if (auth) {
-                const linkUrl = `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent(decodeURIComponent(sId))}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                const cmdType = "itv";
+                const linkUrl = `${auth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(decodeURIComponent(sId))}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                 const res = await axios.get(linkUrl, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 }));
                 let cmdUrl = res.data?.js?.cmd || res.data?.js;
                 if (typeof cmdUrl === 'string') {
@@ -260,7 +343,7 @@ const addon = {
                     if (cleanUrl.startsWith('http')) streams.push({ name: name, url: cleanUrl, title: `⚡ Directo TV`, behaviorHints: { notWebReady: true } });
                 }
             }
-        } catch(e) {}
+        } catch(e) { console.error("[STREAM ERROR]", e.message); }
 
         streams.push({ name: name, url: pUrl, title: `🔄 Proxy Estável`, behaviorHints: { notWebReady: true } });
         return { streams };
