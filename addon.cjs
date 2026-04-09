@@ -22,7 +22,14 @@ const getStalkerAuth = function(config, token) {
     let xua = `Model: ${model}; SW: 0.2.18-r14; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
     let cookie = `mac=${encodeURIComponent(mac)}; stb_lang=en; timezone=Europe/Lisbon;`;
     if (token) cookie += ` access_token=${token};`;
-    return { sn, id1, sig, headers: { "User-Agent": ua, "X-User-Agent": xua, "Cookie": cookie, "Referer": config.url.replace(/\/$/, "") + "/c/", "Accept": "*/*", "X-Runtime-Timezone": "Europe/Lisbon" } };
+    return { sn, id1, sig, headers: { 
+        "User-Agent": ua, 
+        "X-User-Agent": xua, 
+        "Cookie": cookie, 
+        "Referer": config.url.replace(/\/$/, "") + "/c/",
+        "Accept": "*/*",
+        "Connection": "Keep-Alive"
+    }};
 };
 
 const addon = {
@@ -81,12 +88,12 @@ const addon = {
             catalogs.push({ type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿` });
         });
         return { 
-            id: "org.xulov.stalker.v599", 
-            version: "5.9.9", 
+            id: "org.xulov.stalker.v600", 
+            version: "6.0.0", 
             name: "XuloV Hub PRO", 
             resources: ["catalog", "stream", "meta"], 
             types: ["tv", "movie", "series"], 
-            idPrefixes: ["xlv99:"], 
+            idPrefixes: ["xlv100:"], 
             catalogs 
         };
     },
@@ -106,7 +113,7 @@ const addon = {
                 const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 }));
                 const raw = res.data?.js?.data || res.data?.js || [];
                 metas = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => ({
-                    id: `xlv99:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
+                    id: `xlv100:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
                     name: m.name || m.title, type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
                 }));
             }
@@ -142,14 +149,12 @@ const addon = {
                             let m = sName.match(/season\s*(\d+)/i);
                             if (m) sNum = parseInt(m[1]);
 
-                            // USAR O ID DA PASTA DA TEMPORADA COMO BASE
                             let folderBaseId = sFolder.id || sId; 
-
                             let epsArray = [];
                             if (sFolder.series && Array.isArray(sFolder.series) && sFolder.series.length > 0) {
                                 if (typeof sFolder.series[0] !== 'object') {
                                     epsArray = sFolder.series.map(val => ({
-                                        id: `${folderBaseId}|${val}`, 
+                                        id: `${folderBaseId}|${val}`, // PASSAMOS O ID DA PASTA E O NUMERO
                                         name: `Episódio ${val}`,
                                         episode_number: val
                                     }));
@@ -161,26 +166,25 @@ const addon = {
                             for (let ep of epsArray) {
                                 let epTitle = ep.name || ep.title || `Episódio ${ep.episode_number || '?'}`;
                                 if ((ep.cmd || ep.id) && ep.is_dir != 1) {
-                                    let eNum = parseInt(ep.episode_number) || (meta.videos.filter(v => v.season === sNum).length + 1);
                                     meta.videos.push({
-                                        id: `xlv99:${lIdx}:${encodeURIComponent(ep.cmd || ep.id)}:${encodeURIComponent(epTitle)}`,
-                                        title: epTitle, season: sNum, episode: eNum
+                                        id: `xlv100:${lIdx}:${encodeURIComponent(ep.id || ep.cmd)}:${encodeURIComponent(epTitle)}`,
+                                        title: epTitle, season: sNum, episode: parseInt(ep.episode_number) || (meta.videos.length + 1)
                                     });
                                 }
                             }
                         }
                     }
                 }
-            } catch (e) { console.log("[META ERROR]", e.message); }
+            } catch (e) {}
         }
         return { meta };
     },
 
     async getStreams(type, id, configBase64, host) {
-        console.log(`[STALKER] --- TENTANDO PLAY v5.9.9 ---`);
+        console.log(`[STALKER] --- FINAL BOSS ATTACK (v6.0.0) ---`);
         const parts = id.split(":"); 
         const lIdx = parseInt(parts[1]); 
-        const sId = parts[2];
+        const sIdEnc = parts[2];
         const name = decodeURIComponent(parts[3] || "Stream");
         const lists = this.parseConfig(configBase64); 
         const config = lists[lIdx];
@@ -189,34 +193,37 @@ const addon = {
         try {
             const auth = await addon.authenticate(config);
             if (auth) {
-                const decoded = decodeURIComponent(sId);
-                let cmd = decoded; 
+                const decoded = decodeURIComponent(sIdEnc);
+                let baseId = decoded; 
                 let epNum = "";
-                if (decoded.includes('|')) { [cmd, epNum] = decoded.split('|'); }
+                if (decoded.includes('|')) { [baseId, epNum] = decoded.split('|'); }
                 
                 const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 });
                 let streamUrl = null;
 
-                // VARIANTES DE QUERIES
-                const tests = [
-                    // A: Padrão VOD com series
-                    { t: 'vod', a: 'create_link', c: cmd, e: `&series=${epNum}` },
-                    // B: Padrão Series com series
-                    { t: 'series', a: 'create_link', c: cmd, e: `&series=${epNum}` },
-                    // C: Formato Combinado (ID:EP)
-                    { t: 'vod', a: 'create_link', c: `${cmd}:${epNum}`, e: '' },
-                    // D: Action get_link (Fallback antigo)
-                    { t: 'vod', a: 'get_link', c: cmd, e: `&series=${epNum}` }
+                // MATRIZ DE TESTES AGRESSIVA
+                const variants = [
+                    // 1. O Clássico (ID da pasta + &series=)
+                    { t: 'vod', a: 'create_link', q: `&cmd=${baseId}&series=${epNum}` },
+                    // 2. O Moderno (ID da pasta + &episode=)
+                    { t: 'vod', a: 'create_link', q: `&cmd=${baseId}&episode=${epNum}` },
+                    // 3. O "Movie ID" (Usado em servidores pirateados específicos)
+                    { t: 'vod', a: 'create_link', q: `&cmd=${baseId}&movie_id=${baseId}&series=${epNum}` },
+                    // 4. O "Type Series" puro
+                    { t: 'series', a: 'create_link', q: `&cmd=${baseId}&series=${epNum}` },
+                    // 5. O "Direct Command" (Para o caso de o ID já ser o link direto)
+                    { t: 'vod', a: 'create_link', q: `&cmd=${baseId}` }
                 ];
 
-                for (let test of tests) {
-                    console.log(`[STALKER] Testando: ${test.t} + ${test.a} (${test.c})`);
+                for (let v of variants) {
+                    console.log(`[STALKER] Tentando variante: ${v.t}/${v.a} com ${v.q}`);
                     try {
-                        const url = `${auth.api}type=${test.t}&action=${test.a}&cmd=${encodeURIComponent(test.c)}${test.e}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                        const url = `${auth.api}type=${v.t}&action=${v.a}${v.q}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                         const res = await axios.get(url, opts);
                         let link = res.data?.js?.cmd || res.data?.js?.url || res.data?.js;
                         if (typeof link === 'string' && link.includes('://')) {
                             streamUrl = link;
+                            console.log(`[STALKER] SUCESSO na variante!`);
                             break;
                         }
                     } catch(e) {}
@@ -230,12 +237,12 @@ const addon = {
                         behaviorHints: { notWebReady: true } 
                     });
                 } else {
-                    console.log(`[STALKER] Falha total no Play. Servidor não aceitou as variantes.`);
+                    console.log(`[STALKER] Nenhuma variante funcionou.`);
                 }
             }
-        } catch(e) { console.log(`[STALKER] Erro:`, e.message); }
+        } catch(e) { console.log(`[STALKER] Erro fatal:`, e.message); }
 
-        const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
+        const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sIdEnc)}?type=${type}`;
         streams.push({ name: "🔄 Proxy Hub", url: pUrl, title: "Streaming via Hub", behaviorHints: { notWebReady: true } });
         
         return { streams };
