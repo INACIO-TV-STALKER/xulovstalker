@@ -81,12 +81,12 @@ const addon = {
             catalogs.push({ type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿` });
         });
         return { 
-            id: "org.xulov.stalker.v596", 
-            version: "5.9.6", 
+            id: "org.xulov.stalker.v597", 
+            version: "5.9.7", 
             name: "XuloV Hub PRO", 
             resources: ["catalog", "stream", "meta"], 
             types: ["tv", "movie", "series"], 
-            idPrefixes: ["xlv96:"], 
+            idPrefixes: ["xlv97:"], 
             catalogs 
         };
     },
@@ -106,7 +106,7 @@ const addon = {
                 const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 }));
                 const raw = res.data?.js?.data || res.data?.js || [];
                 metas = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => ({
-                    id: `xlv96:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
+                    id: `xlv97:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
                     name: m.name || m.title, type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
                 }));
             }
@@ -142,74 +142,34 @@ const addon = {
                             let m = sName.match(/season\s*(\d+)/i);
                             if (m) sNum = parseInt(m[1]);
 
-                            let targetId = encodeURIComponent(sFolder.id || `${sId}:${sNum}`);
                             let epsArray = [];
-                            
-                            // --- SOLUÇÃO PARA O MISTÉRIO DO "1" ---
                             if (sFolder.series && Array.isArray(sFolder.series) && sFolder.series.length > 0) {
-                                // Se o primeiro item for um número/string (ex: "1"), hidratamos como objeto
                                 if (typeof sFolder.series[0] !== 'object') {
-                                    console.log(`[STALKER] HIDRATANDO IDs: ${sFolder.series}`);
                                     epsArray = sFolder.series.map(val => ({
-                                        id: `${sId}|${val}`, // Formato: ID_SERIE|NUMERO_EPISODIO
+                                        id: `${sId}|${val}`, 
                                         name: `Episódio ${val}`,
                                         episode_number: val
                                     }));
                                 } else {
                                     epsArray = sFolder.series;
                                 }
-                                console.log(`[STALKER] ESTRATÉGIA 1 (EMBUTIDOS) ATIVADA`);
-                            } else {
-                                // ESTRATÉGIA 2: Força bruta com Filtro de Lixo
-                                const endpoints = [
-                                    `&type=vod&action=get_ordered_list&category=${targetId}`,
-                                    `&type=series&action=get_ordered_list&movie_id=${sId}&season_id=${sNum}`,
-                                    `&type=series&action=get_ordered_list&category=${targetId}`
-                                ];
-
-                                const bannedNames = ["something very bad", "star trek", "the grand tour", "the rookie", "the boys"];
-
-                                for (let epUrl of endpoints) {
-                                    try {
-                                        let res = await axios.get(apiBase + epUrl, opts);
-                                        let tempEps = Object.values(res.data?.js?.data || res.data?.js || {});
-                                        
-                                        if (tempEps.length > 0) {
-                                            let firstTitle = (tempEps[0].name || tempEps[0].title || "").toLowerCase();
-                                            let isTrash = bannedNames.some(b => firstTitle.includes(b)) || String(tempEps[0].id) === "3038";
-                                            
-                                            if (!isTrash) {
-                                                epsArray = tempEps;
-                                                console.log(`[STALKER] ESTRATÉGIA 2 OK com: ${epUrl}`);
-                                                break;
-                                            }
-                                        }
-                                    } catch(err) { }
-                                }
                             }
 
-                            // Popular os vídeos
                             for (let ep of epsArray) {
                                 let epTitle = ep.name || ep.title || `Episódio ${ep.episode_number || '?'}`;
-                                let isFolder = ep.is_dir == 1 || ep.is_dir === "1";
-
-                                if ((ep.cmd || ep.id) && !isFolder) {
+                                if ((ep.cmd || ep.id) && ep.is_dir != 1) {
                                     let eNum = parseInt(ep.episode_number) || (meta.videos.filter(v => v.season === sNum).length + 1);
                                     meta.videos.push({
-                                        id: `xlv96:${lIdx}:${encodeURIComponent(ep.cmd || ep.id)}:${encodeURIComponent(epTitle)}`,
-                                        title: epTitle,
-                                        season: sNum,
-                                        episode: eNum
+                                        id: `xlv97:${lIdx}:${encodeURIComponent(ep.cmd || ep.id)}:${encodeURIComponent(epTitle)}`,
+                                        title: epTitle, season: sNum, episode: eNum
                                     });
                                 }
                             }
                         }
                     }
                 }
-            } catch (e) { console.log("[META ERROR]", e.message); }
+            } catch (e) {}
         }
-        
-        if (meta.videos.length === 0) meta.videos.push({ id: `xlv96:${lIdx}:empty:empty`, title: "Série sem episódios visíveis.", season: 1, episode: 1 });
         return { meta };
     },
 
@@ -224,22 +184,24 @@ const addon = {
             if (auth) {
                 const decoded = decodeURIComponent(sId);
                 let cmd = decoded; let epNum = "";
+                if (decoded.includes('|')) { [cmd, epNum] = decoded.split('|'); }
                 
-                // Se o ID for do tipo hidratado "2335|1"
-                if (decoded.includes('|')) { 
-                    const [serieId, num] = decoded.split('|');
-                    cmd = serieId;
-                    epNum = num;
+                const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 6000 });
+                
+                // TENTATIVA 1: &series= (Padrão)
+                const url1 = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cmd)}${epNum ? '&series=' + epNum : ''}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                let res = await axios.get(url1, opts);
+                let streamUrl = res.data?.js?.cmd || res.data?.js?.url || res.data?.js;
+
+                // TENTATIVA 2: &episode= (Fallback)
+                if ((!streamUrl || typeof streamUrl !== 'string') && epNum) {
+                    const url2 = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cmd)}&episode=${epNum}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                    res = await axios.get(url2, opts);
+                    streamUrl = res.data?.js?.cmd || res.data?.js?.url || res.data?.js;
                 }
-                
-                const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 });
-                // Pedimos o link usando o comando da série + o número do episódio
-                const linkUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cmd)}${epNum ? '&series=' + epNum : ''}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                
-                const res = await axios.get(linkUrl, opts);
-                let cmdUrl = res.data?.js?.cmd || res.data?.js?.url || res.data?.js;
-                if (typeof cmdUrl === 'string' && cmdUrl.includes('://')) {
-                    streams.push({ name: "⚡ Directo", url: cmdUrl.replace(/^(ffrt|ffmpeg)\s+/, "").trim(), title: name, behaviorHints: { notWebReady: true } });
+
+                if (typeof streamUrl === 'string' && streamUrl.includes('://')) {
+                    streams.push({ name: "⚡ Directo", url: streamUrl.replace(/^(ffrt|ffmpeg)\s+/, "").trim(), title: name, behaviorHints: { notWebReady: true } });
                 }
             }
         } catch(e) {}
