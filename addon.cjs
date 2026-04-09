@@ -82,12 +82,12 @@ const addon = {
             { type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿` }
         ])).flat();
         return { 
-            id: "org.xulov.stalker.v660", 
-            version: "6.6.0", 
+            id: "org.xulov.stalker.v670", 
+            version: "6.7.0", 
             name: "XuloV Hub PRO", 
             resources: ["catalog", "stream", "meta"], 
             types: ["tv", "movie", "series"], 
-            idPrefixes: ["xlv660:"], 
+            idPrefixes: ["xlv670:"], 
             catalogs 
         };
     },
@@ -105,7 +105,7 @@ const addon = {
                 const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers }));
                 const raw = res.data?.js?.data || res.data?.js || [];
                 return { metas: (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => ({
-                    id: `xlv660:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
+                    id: `xlv670:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
                     name: m.name || m.title, type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
                 }))};
             }
@@ -125,43 +125,55 @@ const addon = {
             const auth = await addon.authenticate(config);
             if (auth) {
                 try {
-                    console.log(`[META] Carregando temporadas para Série: ${sId}`);
                     const opts = this.getAxiosOpts(config, { headers: auth.authData.headers });
-                    const rSeasons = await axios.get(`${auth.api}type=series&action=get_ordered_list&movie_id=${sId.split(':')[0]}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, opts);
+                    const apiBase = `${auth.api}sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                    
+                    // 1. Pede as temporadas
+                    const rSeasons = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${sId.split(':')[0]}`, opts);
                     const seasons = Object.values(rSeasons.data?.js?.data || rSeasons.data?.js || {});
 
                     for (const s of seasons) {
                         const sNum = parseInt((s.name || "").match(/\d+/)?.[0] || 1);
                         const seasonId = s.id || s.cmd;
-                        console.log(`[META] Buscando episódios da Temporada: ${sNum} (ID: ${seasonId})`);
                         
-                        // ENTRADA PROFISSIONAL: Pedir a lista de episódios dentro da pasta da temporada
-                        const rEps = await axios.get(`${auth.api}type=series&action=get_ordered_list&movie_id=${seasonId}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, opts);
-                        const epsRaw = rEps.data?.js?.data || rEps.data?.js || [];
-                        const eps = Array.isArray(epsRaw) ? epsRaw : Object.values(epsRaw);
+                        // 2. Pede o conteúdo da pasta da temporada
+                        const rEps = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${seasonId}`, opts);
+                        let items = Object.values(rEps.data?.js?.data || rEps.data?.js || []);
 
-                        eps.forEach((ep, idx) => {
-                            const epCmd = ep.cmd || ep.id;
-                            const epNum = ep.episode_number || (idx + 1);
-                            if (epCmd) {
+                        for (let ep of items) {
+                            // SE O ITEM FOR OUTRA PASTA (O erro que vimos nas tuas fotos)
+                            if (ep.id && (ep.name === s.name || !ep.cmd)) {
+                                const rDeep = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${ep.id}`, opts);
+                                const deepItems = Object.values(rDeep.data?.js?.data || rDeep.data?.js || []);
+                                if (deepItems.length > 0) {
+                                    deepItems.forEach((d, idx) => {
+                                        meta.videos.push({
+                                            id: `xlv670:${lIdx}:${encodeURIComponent(d.cmd || d.id)}:STREAM`,
+                                            title: d.name || `Episódio ${idx + 1}`,
+                                            season: sNum, episode: idx + 1
+                                        });
+                                    });
+                                    continue;
+                                }
+                            }
+                            
+                            // SE FOR UM EPISÓDIO NORMAL
+                            if (ep.cmd || ep.id) {
                                 meta.videos.push({
-                                    id: `xlv660:${lIdx}:${encodeURIComponent(epCmd)}:STREAM`,
-                                    title: ep.name || `Episódio ${epNum}`,
-                                    season: sNum,
-                                    episode: parseInt(epNum)
+                                    id: `xlv670:${lIdx}:${encodeURIComponent(ep.cmd || ep.id)}:STREAM`,
+                                    title: ep.name || `Episódio`,
+                                    season: sNum, episode: meta.videos.filter(v => v.season === sNum).length + 1
                                 });
                             }
-                        });
+                        }
                     }
-                    console.log(`[META] Sucesso: ${meta.videos.length} episódios encontrados.`);
-                } catch (e) { console.log(`[META] Erro: ${e.message}`); }
+                } catch (e) { console.log(`[META ERROR]`, e.message); }
             }
         }
         return { meta };
     },
 
     async getStreams(type, id, configBase64, host) {
-        console.log(`[STREAM] Pedido recebido para ID: ${id}`);
         const parts = id.split(":");
         const lIdx = parseInt(parts[1]);
         const epCmd = decodeURIComponent(parts[2]);
@@ -171,23 +183,29 @@ const addon = {
         try {
             const auth = await addon.authenticate(config);
             if (auth) {
-                console.log(`[STREAM] Solicitando link direto para CMD: ${epCmd}`);
-                const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 });
-                const url = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(epCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                const res = await axios.get(url, opts);
-                const link = res.data?.js?.cmd || res.data?.js?.url || res.data?.js;
+                const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 6000 });
+                // Tenta VOD primeiro (mais comum para ficheiros de série)
+                const urlVod = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(epCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                const res = await axios.get(urlVod, opts);
+                let link = res.data?.js?.cmd || res.data?.js?.url || res.data?.js;
+
+                if (typeof link !== 'string' || !link.includes('://')) {
+                    // Tenta SERIES se VOD falhar
+                    const urlSer = `${auth.api}type=series&action=create_link&cmd=${encodeURIComponent(epCmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                    const resS = await axios.get(urlSer, opts);
+                    link = resS.data?.js?.cmd || resS.data?.js?.url || resS.data?.js;
+                }
 
                 if (typeof link === 'string' && link.includes('://')) {
                     streams.push({ 
-                        name: "⚡ Directo PRO", 
+                        name: "⚡ Directo", 
                         url: link.replace(/^(ffrt|ffmpeg)\s+/, "").trim(),
                         behaviorHints: { notWebReady: true } 
                     });
                 }
             }
-        } catch(e) { console.log(`[STREAM] Erro: ${e.message}`); }
+        } catch(e) {}
 
-        // Proxy Fallback sempre disponível
         streams.push({ 
             name: "🔄 Proxy Hub", 
             url: `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(epCmd)}?type=vod`,
