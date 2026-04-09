@@ -81,12 +81,12 @@ const addon = {
             catalogs.push({ type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿` });
         });
         return { 
-            id: "org.xulov.stalker.v59", 
-            version: "5.9.0", 
+            id: "org.xulov.stalker.v591", 
+            version: "5.9.1", 
             name: "XuloV Hub PRO", 
             resources: ["catalog", "stream", "meta"], 
             types: ["tv", "movie", "series"], 
-            idPrefixes: ["xlv9:"], 
+            idPrefixes: ["xlv91:"], 
             catalogs 
         };
     },
@@ -104,7 +104,7 @@ const addon = {
                 let act = type === "tv" ? "get_live_streams" : (type === "movie" ? "get_vod_streams" : "get_series");
                 const res = await axios.get(`${api}&action=${act}`, this.getAxiosOpts(config, {timeout: 10000}));
                 metas = (Array.isArray(res.data) ? res.data : []).slice(skip, skip + 100).map(item => ({
-                    id: `xlv9:${lIdx}:${item.stream_id || item.series_id}${type === 'movie' ? '.' + (item.container_extension || 'mp4') : ''}:${encodeURIComponent(item.name || item.title)}`,
+                    id: `xlv91:${lIdx}:${item.stream_id || item.series_id}${type === 'movie' ? '.' + (item.container_extension || 'mp4') : ''}:${encodeURIComponent(item.name || item.title)}`,
                     name: item.name || item.title, type, poster: item.stream_icon || item.cover, posterShape: type === "tv" ? "landscape" : "poster"
                 }));
             } else {
@@ -116,7 +116,7 @@ const addon = {
                     const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 }));
                     const raw = res.data?.js?.data || res.data?.js || [];
                     metas = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => ({
-                        id: `xlv9:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
+                        id: `xlv91:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
                         name: m.name || m.title, type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
                     }));
                 }
@@ -143,52 +143,53 @@ const addon = {
                     const apiBase = `${auth.api}sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                     const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 });
 
-                    // 1. Pede a lista da série
+                    // 1. Pedir temporadas
                     let rRoot = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${sId}`, opts);
                     let initialItems = rRoot.data?.js?.data || rRoot.data?.js || [];
                     let itemsArray = Array.isArray(initialItems) ? initialItems : Object.values(initialItems);
 
                     for (let item of itemsArray) {
-                        let isFolder = item.is_dir == 1 || item.is_dir === "1" || (item.name && item.name.toLowerCase().includes('season'));
+                        let itemName = (item.name || item.title || "").toLowerCase();
+                        let isFolder = item.is_dir == 1 || item.is_dir === "1" || itemName.includes('season');
                         
                         if (isFolder) {
                             let sNum = 1;
-                            let m = (item.name || "").match(/season\s*(\d+)/i);
+                            let m = itemName.match(/season\s*(\d+)/i);
                             if (m) sNum = parseInt(m[1]);
 
-                            // 2. Tenta carregar episódios da temporada
+                            console.log(`[STALKER] A tentar carregar episódios para Season ${sNum}`);
+                            
+                            // 2. Pedir episódios SEM categoria para evitar lixo
                             let epUrl = `${apiBase}&type=series&action=get_ordered_list&movie_id=${sId}&season_num=${sNum}`;
                             let rEps = await axios.get(epUrl, opts);
                             let episodes = rEps.data?.js?.data || rEps.data?.js || [];
                             let epsArray = Array.isArray(episodes) ? episodes : Object.values(episodes);
 
+                            // DEBUG: Ver o que o servidor responde no log
+                            if (epsArray.length > 0) {
+                                console.log(`[STALKER] Resposta do servidor (primeiro item): ${JSON.stringify(epsArray[0]).substring(0, 200)}`);
+                            }
+
                             for (let ep of epsArray) {
-                                // ANTI-LOOP: Só aceita se não for pasta E se o nome não for de outra série conhecida do lixo
                                 let epName = (ep.name || ep.title || "").toLowerCase();
-                                if ((ep.is_dir == 0 || ep.is_dir === "0" || !ep.is_dir) && !epName.includes("season")) {
+                                // FILTRO RADICAL: Só aceita se NÃO for pasta e NÃO contiver "season" no nome
+                                if (!epName.includes("season") && (ep.is_dir == 0 || ep.is_dir === "0" || !ep.is_dir)) {
                                     let eNum = parseInt(ep.episode_number) || (meta.videos.filter(v => v.season === sNum).length + 1);
                                     meta.videos.push({
-                                        id: `xlv9:${lIdx}:${encodeURIComponent(ep.cmd || ep.id)}:${encodeURIComponent(ep.name || ep.title)}`,
+                                        id: `xlv91:${lIdx}:${encodeURIComponent(ep.cmd || ep.id)}:${encodeURIComponent(ep.name || ep.title)}`,
                                         title: ep.name || ep.title || `Episódio ${eNum}`,
                                         season: sNum,
                                         episode: eNum
                                     });
                                 }
                             }
-                        } else {
-                            // Se os episódios vierem logo (sem pastas de seasons)
-                            meta.videos.push({
-                                id: `xlv9:${lIdx}:${encodeURIComponent(item.cmd || item.id)}:${encodeURIComponent(item.name || item.title)}`,
-                                title: item.name || item.title,
-                                season: 1, episode: meta.videos.length + 1
-                            });
                         }
                     }
                 }
             } catch (e) {}
         }
         
-        if (meta.videos.length === 0) meta.videos.push({ id: `xlv9:${lIdx}:empty:empty`, title: "Sem episódios encontrados", season: 1, episode: 1 });
+        if (meta.videos.length === 0) meta.videos.push({ id: `xlv91:${lIdx}:empty:empty`, title: "Sem episódios (Verificar Logs)", season: 1, episode: 1 });
         return { meta };
     },
 
@@ -202,10 +203,9 @@ const addon = {
             const auth = await addon.authenticate(config);
             if (auth) {
                 const decoded = decodeURIComponent(sId);
-                let cmd = decoded; let epNum = "";
-                if (decoded.includes('|')) { [cmd, epNum] = decoded.split('|'); }
+                let cmd = decoded;
                 const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 });
-                const linkUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cmd)}${epNum ? '&series=' + epNum : ''}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                const linkUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                 const res = await axios.get(linkUrl, opts);
                 let cmdUrl = res.data?.js?.cmd || res.data?.js?.url || res.data?.js;
                 if (typeof cmdUrl === 'string' && cmdUrl.includes('://')) {
