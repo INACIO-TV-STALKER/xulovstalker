@@ -81,12 +81,12 @@ const addon = {
             catalogs.push({ type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿` });
         });
         return { 
-            id: "org.xulov.stalker.v594", 
-            version: "5.9.4", 
+            id: "org.xulov.stalker.v595", 
+            version: "5.9.5", 
             name: "XuloV Hub PRO", 
             resources: ["catalog", "stream", "meta"], 
             types: ["tv", "movie", "series"], 
-            idPrefixes: ["xlv94:"], 
+            idPrefixes: ["xlv95:"], 
             catalogs 
         };
     },
@@ -106,7 +106,7 @@ const addon = {
                 const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 }));
                 const raw = res.data?.js?.data || res.data?.js || [];
                 metas = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => ({
-                    id: `xlv94:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
+                    id: `xlv95:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
                     name: m.name || m.title, type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
                 }));
             }
@@ -149,13 +149,14 @@ const addon = {
                             if (sFolder.series && Array.isArray(sFolder.series) && sFolder.series.length > 0) {
                                 epsArray = sFolder.series;
                                 console.log(`[STALKER] ESTRATÉGIA 1 OK: Episódios embutidos na Season ${sNum}`);
+                                console.log(`[STALKER] ESTRUTURA DO PRIMEIRO EPISÓDIO: ${JSON.stringify(epsArray[0]).substring(0, 300)}`);
                             } else {
                                 // ESTRATÉGIA 2: Força bruta em vários endpoints
                                 const endpoints = [
-                                    `&type=vod&action=get_ordered_list&category=${targetId}`, // Tentar como categoria VOD
-                                    `&type=series&action=get_ordered_list&movie_id=${sId}&season_id=${sNum}`, // Tentar por season_id
-                                    `&type=series&action=get_ordered_list&movie_id=${sId}&season=${sNum}`, // Tentar por season
-                                    `&type=series&action=get_ordered_list&category=${targetId}` // Tentar por category de série
+                                    `&type=vod&action=get_ordered_list&category=${targetId}`,
+                                    `&type=series&action=get_ordered_list&movie_id=${sId}&season_id=${sNum}`,
+                                    `&type=series&action=get_ordered_list&movie_id=${sId}&season=${sNum}`,
+                                    `&type=series&action=get_ordered_list&category=${targetId}`
                                 ];
 
                                 for (let epUrl of endpoints) {
@@ -163,15 +164,12 @@ const addon = {
                                         let res = await axios.get(apiBase + epUrl, opts);
                                         let tempEps = Object.values(res.data?.js?.data || res.data?.js || {});
                                         
-                                        // O FILTRO DE LIXO:
                                         if (tempEps.length > 0) {
                                             let firstId = String(tempEps[0].id);
                                             let firstName = (tempEps[0].name || tempEps[0].title || "").toLowerCase();
                                             
-                                            // Se for o 3038 ou devolver a própria temporada, ignora e tenta a próxima chave
                                             if (firstId !== "3038" && firstId !== decodeURIComponent(targetId) && !firstName.includes("something very bad")) {
                                                 epsArray = tempEps;
-                                                console.log(`[STALKER] ESTRATÉGIA 2 OK! Episódios extraídos com a chave: ${epUrl}`);
                                                 break;
                                             }
                                         }
@@ -179,13 +177,27 @@ const addon = {
                                 }
                             }
 
-                            // Popular os vídeos reais
+                            // Popular os vídeos (FILTRO RELAXADO)
                             for (let ep of epsArray) {
-                                let epTitle = ep.name || ep.title || "";
-                                if ((ep.cmd || ep.id) && !epTitle.toLowerCase().includes('season')) {
-                                    let eNum = parseInt(ep.episode_number) || (meta.videos.filter(v => v.season === sNum).length + 1);
+                                // Se não houver título, criamos um
+                                let epTitle = ep.name || ep.title || `Episódio ${ep.episode_number || ep.episode || 'Extra'}`;
+                                
+                                // Agora SÓ bloqueamos se a propriedade "is_dir" for explicitamente 1
+                                let isFolder = ep.is_dir == 1 || ep.is_dir === "1";
+
+                                // Aceitamos se não for pasta e tiver um identificador válido
+                                if ((ep.cmd || ep.id) && !isFolder) {
+                                    let eNum = parseInt(ep.episode_number || ep.episode) || (meta.videos.filter(v => v.season === sNum).length + 1);
+                                    
+                                    // Truque: Se o comando pedir série + número, guardamos o formato "cmd|serie"
+                                    let finalCmd = ep.cmd || ep.id;
+                                    if (!ep.cmd && ep.id) {
+                                        // Alguns servidores requerem o formato ID da série | Episódio
+                                        finalCmd = `${sId}|${ep.episode_number || eNum}`;
+                                    }
+
                                     meta.videos.push({
-                                        id: `xlv94:${lIdx}:${encodeURIComponent(ep.cmd || ep.id)}:${encodeURIComponent(epTitle)}`,
+                                        id: `xlv95:${lIdx}:${encodeURIComponent(finalCmd)}:${encodeURIComponent(epTitle)}`,
                                         title: epTitle,
                                         season: sNum,
                                         episode: eNum
@@ -198,7 +210,7 @@ const addon = {
             } catch (e) { console.log("[META ERROR]", e.message); }
         }
         
-        if (meta.videos.length === 0) meta.videos.push({ id: `xlv94:${lIdx}:empty:empty`, title: "O servidor bloqueou os episódios", season: 1, episode: 1 });
+        if (meta.videos.length === 0) meta.videos.push({ id: `xlv95:${lIdx}:empty:empty`, title: "O filtro relaxou, mas nada encontrado.", season: 1, episode: 1 });
         return { meta };
     },
 
@@ -211,9 +223,13 @@ const addon = {
         try {
             const auth = await addon.authenticate(config);
             if (auth) {
-                const cmd = decodeURIComponent(sId);
+                const decoded = decodeURIComponent(sId);
+                let cmd = decoded; let epNum = "";
+                // Se o cmd tiver o formato "2335|1" (série|episódio)
+                if (decoded.includes('|')) { [cmd, epNum] = decoded.split('|'); }
+                
                 const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 });
-                const linkUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                const linkUrl = `${auth.api}type=vod&action=create_link&cmd=${encodeURIComponent(cmd)}${epNum ? '&series=' + epNum : ''}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                 const res = await axios.get(linkUrl, opts);
                 let cmdUrl = res.data?.js?.cmd || res.data?.js?.url || res.data?.js;
                 if (typeof cmdUrl === 'string' && cmdUrl.includes('://')) {
