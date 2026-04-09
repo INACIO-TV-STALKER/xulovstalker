@@ -13,15 +13,10 @@ function setCache(key, data, ttlMinutes = 30) {
 
 const getStalkerAuth = function(config, token) {
     const mac = (config.mac || "").toUpperCase();
-
     const seed = crypto.createHash('md5').update(mac || 'vazio').digest('hex').toUpperCase();
-
-    // Se não preencheres nada no painel, ele usa o gerado automaticamente.
     const sn  = config.sn  || seed.substring(0, 14); 
     const id1 = config.id1 || seed; 
     const sig = config.sig || "";
-
-    // 2. MUDAR A IDENTIDADE DEPENDENDO DA BOX ESCOLHIDA
     const model = config.model || "MAG250";
     let ua = "";
     let xua = "";
@@ -39,7 +34,7 @@ const getStalkerAuth = function(config, token) {
             ua = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 27211 Safari/533.3";
             xua = `Model: MAG256; SW: 2.20.05-256; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
             break;
-        default: // MAG250 (Padrão)
+        default: 
             ua = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3";
             xua = `Model: MAG250; SW: 0.2.18-r14; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
     }
@@ -63,13 +58,11 @@ const getStalkerAuth = function(config, token) {
 };
 
 const addon = {
-    // 🔥 HELPER PROFISSIONAL ATUALIZADO: Agora suporta SOCKS5 e HTTP
     getAxiosOpts(config, extraOpts = {}) {
         let opts = { ...extraOpts };
         if (config && config.proxy) {
             const proxyStr = config.proxy.trim();
             if (proxyStr.startsWith('socks')) {
-                // Injeta o Agente SOCKS5 para a IPVanish/Outras
                 const agent = new SocksProxyAgent(proxyStr);
                 opts.httpAgent = agent;
                 opts.httpsAgent = agent;
@@ -99,22 +92,17 @@ const addon = {
 
     async authenticate(config) {
         if (config.type === 'xtream') return true;
-
         const cacheKey = `auth_${config.url}_${config.mac || 'nomac'}`;
         const cachedAuth = getCache(cacheKey);
         if (cachedAuth) return cachedAuth;
-
         var authData = getStalkerAuth(config, null);
         var baseUrl = config.url.trim().replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
         if (!baseUrl.endsWith('/')) baseUrl += '/';
         var url = baseUrl + "portal.php";
-
         try {
             var hUrl = url + "?type=stb&action=handshake&sn=" + authData.sn + "&device_id=" + authData.id1 + "&JsHttpRequest=1-0";
-            // Aplica Proxy no Handshake com Timeout de 10s
             var res = await axios.get(hUrl, this.getAxiosOpts(config, { headers: authData.headers, timeout: 10000 }));
             var token = res.data?.js?.token || res.data?.token || null;
-
             if (token) {
                 const finalAuth = { token: token, api: url + "?", authData: getStalkerAuth(config, token) };
                 setCache(cacheKey, finalAuth, 60);
@@ -197,17 +185,19 @@ const addon = {
                         const cat = (Array.isArray(cats) ? cats : Object.values(cats)).find(c => (c.title || c.name) === extra.genre);
                         if (cat) catP = sType === "itv" ? `&genre=${cat.id}` : `&category=${cat.id}`;
                     }
-
                     let sAct = "get_ordered_list"; 
-
                     const page = Math.floor(skip / 14) + 1;
                     const url = `${auth.api}type=${sType}&action=${sAct}${catP}&p=${page}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
                     const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 }));
                     const raw = res.data?.js?.data || res.data?.js || [];
-                    metas = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => ({
-                        id: `xlv:${lIdx}:${encodeURIComponent(m.cmd || m.id)}:${encodeURIComponent(m.name || m.title)}`,
-                        name: m.name || m.title, type: type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
-                    }));
+                    
+                    metas = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => {
+                        let targetId = (type === "series") ? (m.id || m.cmd) : (m.cmd || m.id);
+                        return {
+                            id: `xlv:${lIdx}:${encodeURIComponent(targetId)}:${encodeURIComponent(m.name || m.title)}`,
+                            name: m.name || m.title, type: type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
+                        };
+                    });
                 }
             }
         } catch (e) { console.error("[CATALOG ERROR]", e.message); }
@@ -215,10 +205,162 @@ const addon = {
     },
 
     async getMeta(type, id, configBase64) {
-        const parts = id.split(":"); const lIdx = parseInt(parts[1]); 
-        const name = decodeURIComponent(parts[3] || "Conteúdo");
-        let meta = { id, type, name, posterShape: type === "tv" ? "landscape" : "poster" };
+        const parts = id.split(":");
+        const lIdx = parseInt(parts[1]);
+        const sId = decodeURIComponent(parts[2]);
+        const name = decodeURIComponent(parts[3] || "Série");
+        let meta = { id, type, name, posterShape: "poster", videos: [] };
+
+        if (type === "series") {
+            const lists = this.parseConfig(configBase64);
+            const config = lists[lIdx];
+            if (!config) return { meta };
+
+            try {
+                if (config.type === 'xtream') {
+                    const b = config.url.trim().replace(/\/$/, "");
+                    const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
+                    const res = await axios.get(`${api}&action=get_series_info&series_id=${sId}`, this.getAxiosOpts(config, { timeout: 10000 }));
+                    if (res.data && res.data.episodes) {
+                        const epsData = res.data.episodes;
+                        Object.keys(epsData).forEach(sNum => {
+                            epsData[sNum].forEach(ep => {
+                                meta.videos.push({
+                                    id: `xlv:${lIdx}:${ep.id}.${ep.container_extension || 'mp4'}:${encodeURIComponent(ep.title || 'Ep')}`,
+                                    title: ep.title || `Episódio ${ep.episode_num || 1}`,
+                                    season: parseInt(sNum) || 1,
+                                    episode: parseInt(ep.episode_num) || 1
+                                });
+                            });
+                        });
+                    }
+                } else {
+                    const auth = await addon.authenticate(config);
+                    if (auth) {
+                        const apiBase = `${auth.api}sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                        const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 });
+
+                        // AGORA TENTA POR CATEGORY E TAMBÉM POR MOVIE_ID (A chave do sucesso para servidores mais teimosos)
+                        const getStalkerItems = async (catId) => {
+                            let attempts = [
+                                {t: 'series', p: 'category'},
+                                {t: 'vod', p: 'category'},
+                                {t: 'vod', p: 'movie_id'},
+                                {t: 'series', p: 'movie_id'}
+                            ];
+                            for (let {t, p} of attempts) {
+                                try {
+                                    const r = await axios.get(`${apiBase}&type=${t}&action=get_ordered_list&${p}=${catId}&force_ch_link_check=1`, opts);
+                                    let items = r.data?.js?.data || r.data?.js || [];
+                                    let arr = Array.isArray(items) ? items : Object.values(items);
+                                    if (arr.length > 0) return arr;
+                                } catch (e) {}
+                            }
+                            return [];
+                        };
+
+                        const processStalkerItems = async (items, currentSeasonName = "", depth = 0) => {
+                            if (depth > 3) return; 
+                            for (let item of items) {
+                                if (!item || (!item.id && !item.cmd)) continue;
+                                const isDir = item.is_dir == 1 || item.is_dir === "1";
+                                if (isDir) {
+                                    const subItems = await getStalkerItems(item.id);
+                                    if (subItems.length > 0 && items.length > 0 && subItems[0].id === items[0].id) continue;
+                                    await processStalkerItems(subItems, item.name || currentSeasonName, depth + 1);
+                                } else {
+                                    item.forced_season_name = currentSeasonName;
+                                    this.pushStalkerEpisode(meta, item, lIdx, meta.videos.length);
+                                }
+                            }
+                        };
+
+                        let firstLevel = [];
+                        let tentativas = 4;
+                        
+                        while (tentativas > 0 && firstLevel.length === 0) {
+                            firstLevel = await getStalkerItems(sId);
+
+                            if (firstLevel.length === 0) {
+                                // SE MESMO ASSIM FALHAR, EXTRAI EPISÓDIOS DA INFO DO VÍDEO
+                                for (let t of ['vod', 'series']) {
+                                    if (firstLevel.length > 0) break;
+                                    try {
+                                        const rInfo = await axios.get(`${apiBase}&type=${t}&action=get_video_info&video_id=${sId}`, opts);
+                                        let vInfo = rInfo.data?.js?.data || rInfo.data?.js || {};
+                                        if (Array.isArray(vInfo)) vInfo = vInfo[0] || {};
+                                        
+                                        if (vInfo && vInfo.series && Array.isArray(vInfo.series) && vInfo.series.length > 0) {
+                                            vInfo.series.forEach((epVal, idx) => {
+                                                let epNum = typeof epVal === 'object' ? (epVal.episode || idx+1) : epVal;
+                                                let epName = typeof epVal === 'object' ? (epVal.name || epVal.title || `Episódio ${epNum}`) : `Episódio ${epNum}`;
+                                                
+                                                // Guarda o sId original e o número do episódio separados por |
+                                                let finalCmd = typeof epVal === 'object' && epVal.cmd ? epVal.cmd : `${sId}|${epNum}`;
+                                                
+                                                firstLevel.push({ 
+                                                    id: sId, 
+                                                    cmd: finalCmd, 
+                                                    name: epName,
+                                                    is_dir: 0 
+                                                });
+                                            });
+                                        }
+                                    } catch(e) {}
+                                }
+                            }
+
+                            if (firstLevel.length === 0) {
+                                tentativas--;
+                                if (tentativas > 0) await new Promise(r => setTimeout(r, 1500));
+                            }
+                        }
+
+                        await processStalkerItems(firstLevel);
+                        meta.videos.sort((a, b) => (a.season - b.season) || (a.episode - b.episode));
+                    }
+                }
+            } catch (e) { console.error("Erro Meta:", e); }
+
+            if (meta.videos.length === 0) {
+                meta.videos.push({
+                    id: `xlv:${lIdx}:empty:empty`,
+                    title: "Nenhum episódio encontrado ou servidor instável",
+                    season: 1, episode: 1
+                });
+            }
+        }
         return { meta };
+    },
+
+    pushStalkerEpisode(meta, ep, lIdx, index) {
+        let sNum = 1;
+        let eNum = index + 1;
+        
+        const name = (ep.name || ep.title || "").toString().toLowerCase().trim();
+        const seasonName = (ep.forced_season_name || "").toString().toLowerCase().trim();
+
+        const matchS = seasonName.match(/(?:season|temporada|s|t)\s*(\d+)/i);
+        if (matchS) sNum = parseInt(matchS[1]);
+
+        const matchSE = name.match(/s(\d+)[\s\-_]*e(\d+)/i);
+        if (matchSE) {
+            sNum = parseInt(matchSE[1]);
+            eNum = parseInt(matchSE[2]);
+        } else {
+            const matchE = name.match(/(?:ep|e|episodio)\s*(\d+)/i);
+            if (matchE) eNum = parseInt(matchE[1]);
+            else if (/^\d+$/.test(name)) eNum = parseInt(name); 
+        }
+
+        const finalCmd = ep.cmd ? ep.cmd : ep.id;
+
+        meta.videos.push({
+            id: `xlv:${lIdx}:${encodeURIComponent(finalCmd)}:${encodeURIComponent(ep.name || 'Episódio')}`,
+            title: ep.name || `Episódio ${eNum}`,
+            season: sNum,
+            episode: eNum
+        });
     },
 
     async getStreams(type, id, configBase64, host) {
@@ -227,45 +369,79 @@ const addon = {
         const lists = this.parseConfig(configBase64); const config = lists[lIdx];
         const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
 
-        // Para Filmes e Séries, mantemos o comportamento que tinhas (apenas Reproduzir/Proxy)
-        if (type === 'movie' || type === 'series') {
-            return { streams: [{ name: name, url: pUrl, title: `🎬 Reproduzir`, behaviorHints: { notWebReady: true } }] };
-        }
+        let streams = [];
+        let directAdded = false;
 
-        // Se for Xtream, devolve sempre os dois
         if (config?.type === 'xtream') {
             const b = config.url.trim().replace(/\/$/, "");
-            return { streams: [
-                { name: name, url: `${b}/${config.user}/${config.pass}/${sId}`, title: `⚡ Directo TV`, behaviorHints: { notWebReady: true } },
-                { name: name, url: pUrl, title: `🔄 Proxy Estável`, behaviorHints: { notWebReady: true } }
-            ]};
-        }
+            if (type === 'tv') {
+                streams.push({ name: name, url: `${b}/${config.user}/${config.pass}/${sId}`, title: `📺 Directo TV`, behaviorHints: { notWebReady: true } });
+            } else if (type === 'movie') {
+                streams.push({ name: name, url: `${b}/movie/${config.user}/${config.pass}/${sId}`, title: `🎬 Directo Filme`, behaviorHints: { notWebReady: true } });
+            } else if (type === 'series') {
+                streams.push({ name: name, url: `${b}/series/${config.user}/${config.pass}/${sId}`, title: `🍿 Directo Série`, behaviorHints: { notWebReady: true } });
+            }
+        } 
+        else {
+            try {
+                const auth = await addon.authenticate(config);
+                if (auth) {
+                    const decodedCmd = decodeURIComponent(sId);
+                    
+                    // SEPARA O ID DA SÉRIE DO NÚMERO DO EPISÓDIO (CASO EXISTA O SÍMBOLO |)
+                    let realCmd = decodedCmd;
+                    let sNum = null;
+                    if (decodedCmd.includes('|')) {
+                        let partsCmd = decodedCmd.split('|');
+                        realCmd = partsCmd[0];
+                        sNum = partsCmd[1];
+                    }
 
-        let streams = [];
-        try {
-            const auth = await addon.authenticate(config);
-            if (auth) {
-                // Adicionado force_ch_link_check=1 (Alguns servidores Stalker bloqueiam o link sem isto)
-                const linkUrl = `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent(decodeURIComponent(sId))}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
-                const res = await axios.get(linkUrl, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 }));
-                let cmdUrl = res.data?.js?.cmd || res.data?.js;
-                
-                if (typeof cmdUrl === 'string') {
-                    // Limpa lixo como "ffmpeg http..." que alguns servidores injetam
-                    let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-                    // Agora é mais tolerante: aceita http, https ou qualquer link com ://
-                    if (cleanUrl.startsWith('http') || cleanUrl.includes('://')) {
-                        streams.push({ name: name, url: cleanUrl, title: `⚡ Directo TV`, behaviorHints: { notWebReady: true } });
+                    const cmdType = (type === "movie" || type === "series") ? "vod" : "itv";
+                    const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 });
+                    let seriesParam = sNum ? `&series=${sNum}` : '';
+                    
+                    let linkUrl = `${auth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(realCmd)}${seriesParam}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
+                    let res = await axios.get(linkUrl, opts);
+                    let jsData = res.data?.js;
+                    let cmdUrl = jsData?.cmd || jsData?.url || (typeof jsData === 'string' ? jsData : null);
+
+                    if (!cmdUrl && typeof jsData === 'object' && jsData !== null) {
+                        cmdUrl = Object.values(jsData).find(v => typeof v === 'string' && (v.startsWith('http') || v.includes('://')));
+                    }
+
+                    if (!cmdUrl || cmdUrl.trim() === "") {
+                        let linkUrlId = `${auth.api}type=${cmdType}&action=create_link&video_id=${encodeURIComponent(realCmd)}${seriesParam}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
+                        let resId = await axios.get(linkUrlId, opts);
+                        let jsDataId = resId.data?.js;
+                        cmdUrl = jsDataId?.cmd || jsDataId?.url || (typeof jsDataId === 'string' ? jsDataId : null);
+                    }
+
+                    if (typeof cmdUrl === 'string' && cmdUrl.trim() !== "") {
+                        let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+                        if (cleanUrl.includes('://')) {
+                            const titleStr = type === 'movie' ? '🎬 Directo Filme' : (type === 'series' ? '🍿 Directo Série' : '⚡ Directo TV');
+                            streams.push({ name: name, url: cleanUrl, title: titleStr, behaviorHints: { notWebReady: true } });
+                            directAdded = true;
+                        }
                     }
                 }
+            } catch(e) { 
+                console.error("[STREAM ERROR]", e.message); 
             }
-        } catch(e) { 
-            console.error("[STREAM ERROR]", e.message); 
-        }
 
-        // O Proxy Estável é sempre adicionado como rede de segurança no fim
-        streams.push({ name: name, url: pUrl, title: `🔄 Proxy Estável`, behaviorHints: { notWebReady: true } });
+            if (!directAdded) {
+                // Remove o pipe no fallback caso falhe tudo
+                let fallbackUrl = decodeURIComponent(sId).split('|')[0].replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+                if (fallbackUrl.startsWith('http')) {
+                    const titleStr = type === 'movie' ? '🎬 Directo Filme' : (type === 'series' ? '🍿 Directo Série' : '⚡ Directo TV');
+                    streams.push({ name: name, url: fallbackUrl, title: titleStr, behaviorHints: { notWebReady: true } });
+                }
+            }
+        }
         
+        const proxyTitle = type === 'movie' ? '🎬 Proxy Estável' : (type === 'series' ? '🍿 Proxy Estável' : '🔄 Proxy Estável');
+        streams.push({ name: name, url: pUrl, title: proxyTitle, behaviorHints: { notWebReady: true } });
         return { streams };
     }
 };
