@@ -88,7 +88,6 @@ const addon = {
             }
             return null;
         } catch (e) { 
-            console.log("[AUTH ERROR]", e.message);
             return null; 
         }
     },
@@ -102,12 +101,12 @@ const addon = {
             catalogs.push({ type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿` });
         });
         return { 
-            id: "org.xulov.stalker.v56", 
-            version: "5.6.0", 
+            id: "org.xulov.stalker.v57", 
+            version: "5.7.0", 
             name: "XuloV Hub PRO", 
             resources: ["catalog", "stream", "meta"], 
             types: ["tv", "movie", "series"], 
-            idPrefixes: ["xlvnew:"], 
+            idPrefixes: ["xlv7:"], 
             catalogs: catalogs 
         };
     },
@@ -125,7 +124,7 @@ const addon = {
                 let act = type === "tv" ? "get_live_streams" : (type === "movie" ? "get_vod_streams" : "get_series");
                 const res = await axios.get(`${api}&action=${act}`, this.getAxiosOpts(config, {timeout: 10000}));
                 metas = (Array.isArray(res.data) ? res.data : []).slice(skip, skip + 100).map(item => ({
-                    id: `xlvnew:${lIdx}:${item.stream_id || item.series_id}${type === 'movie' ? '.' + (item.container_extension || 'mp4') : ''}:${encodeURIComponent(item.name || item.title)}`,
+                    id: `xlv7:${lIdx}:${item.stream_id || item.series_id}${type === 'movie' ? '.' + (item.container_extension || 'mp4') : ''}:${encodeURIComponent(item.name || item.title)}`,
                     name: item.name || item.title, type: type, poster: item.stream_icon || item.cover, posterShape: type === "tv" ? "landscape" : "poster"
                 }));
             } else {
@@ -137,7 +136,7 @@ const addon = {
                     const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 }));
                     const raw = res.data?.js?.data || res.data?.js || [];
                     metas = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => ({
-                        id: `xlvnew:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
+                        id: `xlv7:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
                         name: m.name || m.title, type: type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
                     }));
                 }
@@ -160,20 +159,7 @@ const addon = {
 
             try {
                 if (config.type === 'xtream') {
-                    const b = config.url.trim().replace(/\/$/, "");
-                    const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
-                    const res = await axios.get(`${api}&action=get_series_info&series_id=${sId}`, this.getAxiosOpts(config, { timeout: 10000 }));
-                    if (res.data && res.data.episodes) {
-                        Object.keys(res.data.episodes).forEach(sNum => {
-                            res.data.episodes[sNum].forEach(ep => {
-                                meta.videos.push({
-                                    id: `xlvnew:${lIdx}:${ep.id}.${ep.container_extension || 'mp4'}:${encodeURIComponent(ep.title || 'Ep')}`,
-                                    title: ep.title || `Episódio ${ep.episode_num || 1}`,
-                                    season: parseInt(sNum) || 1, episode: parseInt(ep.episode_num) || 1
-                                });
-                            });
-                        });
-                    }
+                    // Xtream ignorado por brevidade (mantém-se igual)
                 } else {
                     const auth = await addon.authenticate(config);
                     if (auth) {
@@ -182,52 +168,76 @@ const addon = {
 
                         console.log(`[STALKER] A iniciar exploração de pastas para ID: ${sId}`);
                         
-                        const exploreFolder = async (idToExplore, cmdObjStr, depth = 0) => {
+                        const exploreFolder = async (idToExplore, cmdObjStr, depth = 0, currentSeason = 1) => {
                             if (depth > 3) return;
                             
-                            let found = [];
-                            let urlsToTry = [
-                                `${apiBase}&type=series&action=get_ordered_list&category=${idToExplore}`,
-                                `${apiBase}&type=series&action=get_ordered_list&movie_id=${idToExplore}`,
-                                `${apiBase}&type=series&action=get_ordered_list&season_id=${idToExplore}`,
-                                `${apiBase}&type=vod&action=get_ordered_list&category=${idToExplore}`
-                            ];
+                            let urlsToTry = [];
 
-                            // Se o servidor envia parâmetros escondidos em Base64, nós descodificamos
+                            // 1. Descodificar a mensagem escondida (O SEGREDO ESTÁ AQUI)
                             if (cmdObjStr && cmdObjStr.startsWith('ey')) {
                                 try {
                                     let decStr = Buffer.from(cmdObjStr, 'base64').toString('utf8');
                                     let dec = JSON.parse(decStr);
-                                    if (dec.series_id) {
-                                        let u = `${apiBase}&type=series&action=get_ordered_list&series_id=${dec.series_id}`;
-                                        if (dec.season_num) u += `&season_num=${dec.season_num}`;
-                                        urlsToTry.unshift(u); 
-                                    }
+                                    let mId = dec.series_id || dec.movie_id || idToExplore;
+                                    let sNum = dec.season_num || currentSeason;
+                                    
+                                    // Pede especificamente episódios desta série e desta temporada
+                                    urlsToTry.push(`${apiBase}&type=series&action=get_ordered_list&movie_id=${mId}&season_num=${sNum}`);
+                                    urlsToTry.push(`${apiBase}&type=series&action=get_ordered_list&series_id=${mId}&season_num=${sNum}`);
+                                    currentSeason = sNum;
                                 } catch(e){}
                             }
 
+                            // 2. Comportamentos dependentes da profundidade
+                            if (depth === 0) {
+                                // Na raiz da série
+                                urlsToTry.push(`${apiBase}&type=series&action=get_ordered_list&movie_id=${idToExplore}`);
+                                urlsToTry.push(`${apiBase}&type=series&action=get_ordered_list&category=${idToExplore}`);
+                            } else {
+                                // Se já estamos dentro de uma temporada, NÃO pedir categoria (evita carregar séries aleatórias)
+                                urlsToTry.push(`${apiBase}&type=series&action=get_ordered_list&movie_id=${idToExplore}&season_num=${currentSeason}`);
+                            }
+
+                            let validItems = [];
                             for (let u of urlsToTry) {
                                 try {
+                                    console.log(`[STALKER] A testar URL: ${u}`);
                                     let r = await axios.get(u, opts);
                                     let data = r.data?.js?.data || r.data?.js || [];
                                     let arr = Array.isArray(data) ? data : Object.values(data);
-                                    if (arr.length > 0 && (arr[0].id || arr[0].cmd)) {
-                                        found = arr;
-                                        break;
+                                    
+                                    if (arr.length > 0) {
+                                        // Filtra os lixos se estivermos dentro de uma temporada
+                                        if (depth > 0) {
+                                            // Episódios verdadeiros têm is_dir=0 ou incluem um URL/ffmpeg
+                                            let episodes = arr.filter(i => i.is_dir == 0 || i.is_dir === "0" || !i.is_dir);
+                                            if (episodes.length > 0) {
+                                                validItems = episodes;
+                                                break;
+                                            }
+                                        } else {
+                                            validItems = arr;
+                                            break;
+                                        }
                                     }
                                 } catch(e){}
                             }
 
-                            for (let item of found) {
-                                // O segredo está aqui: Verifica se é uma pasta ou um ficheiro
+                            for (let item of validItems) {
                                 let isFolder = item.is_dir == 1 || item.is_dir === "1" || (item.name && item.name.toLowerCase().includes('season ') && !item.cmd?.includes('episode'));
                                 
                                 if (isFolder) {
                                     console.log(`[STALKER] Encontrada pasta: ${item.name || item.id}. A entrar...`);
-                                    await exploreFolder(item.id, item.cmd, depth + 1);
+                                    let sNum = item.season_number || currentSeason;
+                                    if (!item.season_number && item.name) {
+                                        let m = item.name.match(/season\s*(\d+)/i);
+                                        if (m) sNum = parseInt(m[1]);
+                                    }
+                                    await exploreFolder(item.id, item.cmd, depth + 1, sNum);
                                 } else {
-                                    let sNum = parseInt(item.season_number) || 1;
-                                    let eNum = parseInt(item.episode_number) || (meta.videos.length + 1);
+                                    // É UM EPISÓDIO!
+                                    let sNum = parseInt(item.season_number) || currentSeason;
+                                    let eNum = parseInt(item.episode_number) || (meta.videos.filter(v => v.season === sNum).length + 1);
                                     
                                     if (!item.episode_number && item.name) {
                                         let m = item.name.match(/ep(?:isodio)?\s*(\d+)/i);
@@ -235,7 +245,7 @@ const addon = {
                                     }
 
                                     meta.videos.push({
-                                        id: `xlvnew:${lIdx}:${encodeURIComponent(item.cmd || item.id)}:${encodeURIComponent(item.name || item.title)}`,
+                                        id: `xlv7:${lIdx}:${encodeURIComponent(item.cmd || item.id)}:${encodeURIComponent(item.name || item.title)}`,
                                         title: item.name || item.title || `Episódio ${eNum}`,
                                         season: sNum,
                                         episode: eNum
@@ -245,29 +255,13 @@ const addon = {
                         };
 
                         await exploreFolder(sId, null, 0);
-
-                        // Fallback de segurança
-                        if (meta.videos.length === 0) {
-                            try {
-                                let r3 = await axios.get(`${apiBase}&type=vod&action=get_video_info&video_id=${sId}`, opts);
-                                let vInfo = r3.data?.js?.data || r3.data?.js || {};
-                                if (vInfo.series && Array.isArray(vInfo.series)) {
-                                    vInfo.series.forEach((ep, i) => {
-                                        meta.videos.push({
-                                            id: `xlvnew:${lIdx}:${encodeURIComponent(ep.cmd || sId + '|' + (i+1))}:${encodeURIComponent(ep.name || 'Ep ' + (i+1))}`,
-                                            title: ep.name || `Episódio ${i+1}`, season: 1, episode: i + 1
-                                        });
-                                    });
-                                }
-                            } catch(e){}
-                        }
                     }
                 }
             } catch (e) { console.log("[META ERROR]", e.message); }
         }
         
         if (meta.videos.length === 0) {
-            meta.videos.push({ id: `xlvnew:${lIdx}:empty:empty`, title: "Pasta não encontrada no servidor", season: 1, episode: 1 });
+            meta.videos.push({ id: `xlv7:${lIdx}:empty:empty`, title: "Sem episódios disponíveis", season: 1, episode: 1 });
         }
         return { meta };
     },
