@@ -82,11 +82,11 @@ const addon = {
             { type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿` }
         ])).flat();
         return { 
-            id: "org.xulov.stalker.v700", version: "7.0.0", 
+            id: "org.xulov.stalker.v710", version: "7.1.0", 
             name: "XuloV Hub PRO", 
             resources: ["catalog", "stream", "meta"], 
             types: ["tv", "movie", "series"], 
-            idPrefixes: ["xlv700:"], catalogs 
+            idPrefixes: ["xlv710:"], catalogs 
         };
     },
 
@@ -103,7 +103,7 @@ const addon = {
                 const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers }));
                 const raw = res.data?.js?.data || res.data?.js || [];
                 return { metas: (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => ({
-                    id: `xlv700:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
+                    id: `xlv710:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
                     name: m.name || m.title, type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
                 }))};
             }
@@ -126,7 +126,6 @@ const addon = {
                     const opts = this.getAxiosOpts(config, { headers: auth.authData.headers });
                     const apiBase = `${auth.api}sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                     
-                    // 1. Pega as temporadas (ID: 2282)
                     const rSeasons = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${sId}`, opts);
                     const seasons = Object.values(rSeasons.data?.js?.data || rSeasons.data?.js || {});
 
@@ -134,7 +133,6 @@ const addon = {
                         const sNum = parseInt((s.name || "").match(/\d+/)?.[0] || 1);
                         const seasonId = s.id || s.cmd;
                         
-                        // 2. ENTRA NA PASTA DA TEMPORADA (ID: 2282:1)
                         const rEps = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${seasonId}`, opts);
                         let eps = Object.values(rEps.data?.js?.data || rEps.data?.js || []);
 
@@ -142,7 +140,7 @@ const addon = {
                             const finalCmd = ep.cmd || ep.id;
                             if (finalCmd) {
                                 meta.videos.push({
-                                    id: `xlv700:${lIdx}:${encodeURIComponent(finalCmd)}:${sNum}:${idx + 1}`,
+                                    id: `xlv710:${lIdx}:${encodeURIComponent(finalCmd)}:${sNum}:${idx + 1}`,
                                     title: ep.name || `Episódio ${idx + 1}`,
                                     season: sNum, episode: idx + 1
                                 });
@@ -159,23 +157,21 @@ const addon = {
         const parts = id.split(":");
         const lIdx = parseInt(parts[1]);
         const cmd = decodeURIComponent(parts[2]);
-        const seasonNum = parts[3];
-        const epNum = parts[4];
         
         const config = this.parseConfig(configBase64)[lIdx];
         let streams = [];
+        let successType = 'itv'; // Vamos diretos ao "segredo" que o teu log revelou!
 
         try {
             const auth = await addon.authenticate(config);
             if (auth) {
                 const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 });
                 
-                // --- TÉCNICA TIVIMATE: TENTAR MÚLTIPLOS TIPOS E LOGAR A RESPOSTA ---
+                // Coloquei o ITV em primeiro lugar porque sabemos que é o que o teu servidor quer
                 const probes = [
-                    { t: 'vod', q: `&cmd=${encodeURIComponent(cmd)}` },
-                    { t: 'series', q: `&cmd=${encodeURIComponent(cmd)}` },
                     { t: 'itv', q: `&cmd=${encodeURIComponent(cmd)}` },
-                    { t: 'series', q: `&movie_id=${cmd.split(':')[0]}&season=${seasonNum}&episode=${epNum}` }
+                    { t: 'vod', q: `&cmd=${encodeURIComponent(cmd)}` },
+                    { t: 'series', q: `&cmd=${encodeURIComponent(cmd)}` }
                 ];
 
                 for (let probe of probes) {
@@ -184,31 +180,41 @@ const addon = {
                         const res = await axios.get(url, opts);
                         const data = res.data?.js || res.data;
                         
-                        console.log(`[PROBE] Tipo: ${probe.t} | Resposta:`, JSON.stringify(data).substring(0, 100));
-
                         let link = data.cmd || data.url || (typeof data === 'string' && data.includes('://') ? data : null);
+                        
                         if (link && typeof link === 'string' && link.includes('://')) {
+                            successType = probe.t; // Captura o tipo exato que o servidor aceitou
+                            const cleanLink = link.replace(/^(ffrt|ffmpeg)\s+/, "").trim();
+                            
+                            // 1. O Proxy Hub AGORA USA O TIPO CORRETO DINAMICAMENTE (Foi isto que faltou antes!)
                             streams.push({ 
-                                name: `⚡ Directo (${probe.t.toUpperCase()})`, 
-                                url: link.replace(/^(ffrt|ffmpeg)\s+/, "").trim(),
+                                name: `🔄 Proxy Hub (${probe.t.toUpperCase()})`, 
+                                url: `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(cmd)}?type=${successType}`,
+                                behaviorHints: { notWebReady: true } 
+                            });
+
+                            // 2. Link Direto caso o Stremio não precise de User-Agent neste server
+                            streams.push({ 
+                                name: `⚡ Directo`, 
+                                url: cleanLink,
                                 behaviorHints: { notWebReady: true }
                             });
-                            // Se acharmos o link "ouro", não precisamos dos outros probes
+                            
                             break; 
                         }
-                    } catch(e) {
-                        console.log(`[PROBE ERROR] Tipo: ${probe.t} | ${e.message}`);
-                    }
+                    } catch(e) {}
                 }
             }
         } catch(e) {}
 
-        // Fallback do Proxy com o comando original
-        streams.push({ 
-            name: "🔄 Proxy Hub", 
-            url: `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(cmd)}?type=series`,
-            behaviorHints: { notWebReady: true } 
-        });
+        // Fallback de segurança caso a API engasgue
+        if (streams.length === 0) {
+            streams.push({ 
+                name: "🔄 Proxy Fallback", 
+                url: `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(cmd)}?type=${successType}`,
+                behaviorHints: { notWebReady: true } 
+            });
+        }
         
         return { streams };
     }
