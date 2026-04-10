@@ -105,14 +105,11 @@ const addon = {
             var hUrl = url + "?type=stb&action=handshake&sn=" + authData.sn + "&device_id=" + authData.id1 + "&JsHttpRequest=1-0";
             var res = await axios.get(hUrl, this.getAxiosOpts(config, { headers: authData.headers, timeout: 10000 }));
             
-            // --- DETEÇÃO EXÍMIA DE SEGURANÇA E VERSÃO ---
             const sHeader = res.headers['server'] || "";
             const pHeader = res.headers['x-powered-by'] || "";
             let secProfile = "Stalker Legacy (0.2.x)";
             if (pHeader.toLowerCase().includes("ministra") || sHeader.toLowerCase().includes("nginx")) secProfile = "Ministra Moderno (5.x+)";
-            console.log(`[SECURITY SCAN] Handshake OK | Perfil: ${secProfile} | MAC: ${config.mac}`);
-            // --------------------------------------------
-
+            
             var token = res.data?.js?.token || res.data?.token || null;
             if (token) {
                 const finalAuth = { token: token, api: url + "?", authData: getStalkerAuth(config, token), profile: secProfile };
@@ -152,7 +149,7 @@ const addon = {
                         tvG = tvG.concat(g1); movG = movG.concat(g2); serG = serG.concat(g3);
                     }
                 }
-            } catch(e) { console.error(`[MANIFEST ERROR] Falha ao carregar lista ${i}:`, e.message); }
+            } catch(e) {}
             catalogs.push({ type: "tv", id: `cat_${i}`, name: l.name || `Lista ${i+1}`, extra: [{ name: "genre", options: tvG.filter(Boolean) }, { name: "skip" }] });
             catalogs.push({ type: "movie", id: `mov_${i}`, name: `${l.name || `Lista ${i+1}`} 🎬`, extra: [{ name: "genre", options: movG.filter(Boolean) }, { name: "skip" }] });
             catalogs.push({ type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿`, extra: [{ name: "genre", options: serG.filter(Boolean) }, { name: "skip" }] });
@@ -229,7 +226,6 @@ const addon = {
 
             try {
                 if (config.type === 'xtream') {
-                    // CÓDIGO XTREAM INTACTO
                     const b = config.url.trim().replace(/\/$/, "");
                     const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
                     const res = await axios.get(`${api}&action=get_series_info&series_id=${sId}`, this.getAxiosOpts(config, { timeout: 10000 }));
@@ -254,7 +250,7 @@ const addon = {
 
                         let itemsFound = false;
 
-                        // --- MOTOR EXÍMIO: PASSO 1 (Padrão Ministra / Array na Info) ---
+                        // Tenta o método rápido (apenas para servidores muito modernos)
                         try {
                             const rInfo = await axios.get(`${apiBase}&type=vod&action=get_video_info&video_id=${sId}`, opts);
                             let vInfo = rInfo.data?.js?.data || rInfo.data?.js || {};
@@ -275,51 +271,67 @@ const addon = {
                             }
                         } catch(e) {}
 
-                        // --- MOTOR EXÍMIO: PASSO 2 (Padrão Stalker / Temporadas em Pastas) ---
+                        // MOTOR DE DEEP SCAN - SE O SERVIDOR DEVOLVER PASTAS, NÓS ENTRAMOS.
                         if (!itemsFound) {
-                            try {
-                                let rFirst = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${sId}&force_ch_link_check=1`, opts);
-                                let firstLevel = rFirst.data?.js?.data || rFirst.data?.js || [];
-                                firstLevel = Array.isArray(firstLevel) ? firstLevel : Object.values(firstLevel);
+                            const fetchStalkerEps = async (parentId, currentSeason, depth = 0) => {
+                                let foundEps = [];
+                                if (depth > 3) return foundEps; // Segurança contra loops infinitos
 
-                                for (let i = 0; i < firstLevel.length; i++) {
-                                    let item = firstLevel[i];
-                                    if (!item || (!item.id && !item.cmd)) continue;
+                                try {
+                                    let res = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${parentId}&force_ch_link_check=1`, opts);
+                                    let items = res.data?.js?.data || res.data?.js || [];
+                                    items = Array.isArray(items) ? items : Object.values(items);
 
-                                    let isDir = item.is_dir == 1 || item.is_dir === "1";
-                                    
-                                    if (isDir || (!item.cmd && item.id)) {
-                                        // É UMA PASTA DE TEMPORADA -> ENTRAR NA PASTA
-                                        let sNum = parseInt((item.name || "").match(/\d+/)?.[0] || (i + 1));
+                                    for (let i = 0; i < items.length; i++) {
+                                        let item = items[i];
+                                        if (!item) continue;
+
+                                        // Regra de Ouro: É pasta se is_dir for 1 OU se tiver ID mas não tiver comando de stream
+                                        let isDir = item.is_dir == 1 || item.is_dir === "1" || (!item.cmd && item.id);
                                         
-                                        let rEps = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${item.id}&force_ch_link_check=1`, opts);
-                                        let epsRaw = rEps.data?.js?.data || rEps.data?.js || [];
-                                        let eps = Array.isArray(epsRaw) ? epsRaw : Object.values(epsRaw);
-
-                                        eps.forEach((ep, eIdx) => {
-                                            if (!ep || (!ep.id && !ep.cmd)) return;
-                                            let epName = ep.name || ep.title || `Episódio ${eIdx + 1}`;
-                                            let finalCmd = ep.cmd || ep.id;
+                                        if (isDir) {
+                                            // É uma pasta de temporada (Ex: "Season 8")
+                                            let nameStr = item.name || item.title || "";
+                                            let sNumMatch = nameStr.match(/(?:season|temporada|s)\s*(\d+)/i);
+                                            let sNum = currentSeason;
+                                            if (sNumMatch) {
+                                                sNum = parseInt(sNumMatch[1]);
+                                            } else {
+                                                let digitMatch = nameStr.match(/\d+/);
+                                                if (digitMatch) sNum = parseInt(digitMatch[0]);
+                                            }
                                             
-                                            let eNum = eIdx + 1;
+                                            // Entrar na pasta e juntar os episódios ao array principal
+                                            let subEps = await fetchStalkerEps(item.id, sNum, depth + 1);
+                                            foundEps.push(...subEps);
+                                        } else {
+                                            // É um episódio real
+                                            let epName = item.name || item.title || `Episódio ${i + 1}`;
+                                            let finalCmd = item.cmd || item.id;
+                                            
+                                            let eNum = i + 1;
                                             const matchE = epName.match(/(?:ep|e|episodio)\s*(\d+)/i);
                                             if (matchE) eNum = parseInt(matchE[1]);
 
-                                            meta.videos.push({
+                                            foundEps.push({
                                                 id: `xlv:${lIdx}:${encodeURIComponent(finalCmd)}:${encodeURIComponent(epName)}`,
-                                                title: epName, season: sNum, episode: eNum
+                                                title: epName,
+                                                season: currentSeason,
+                                                episode: eNum
                                             });
-                                        });
-                                    } else {
-                                        // É UM EPISÓDIO SOLTO NA RAIZ
-                                        item.forced_season_name = `Season 1`;
-                                        this.pushStalkerEpisode(meta, item, lIdx, meta.videos.length);
+                                        }
                                     }
+                                } catch (err) {
+                                    console.error(`Erro ao ler pasta Stalker ID ${parentId}:`, err.message);
                                 }
-                            } catch(e) {}
+                                return foundEps;
+                            };
+
+                            // Inicia a varredura a partir do ID principal da Série
+                            meta.videos = await fetchStalkerEps(sId, 1);
                         }
 
-                        // Garante que a ordem no Stremio fica perfeita
+                        // Garante que o Stremio recebe tudo ordenado e sem pastas misturadas
                         meta.videos.sort((a, b) => (a.season - b.season) || (a.episode - b.episode));
                     }
                 }
@@ -328,42 +340,12 @@ const addon = {
             if (meta.videos.length === 0) {
                 meta.videos.push({
                     id: `xlv:${lIdx}:empty:empty`,
-                    title: "Nenhum episódio encontrado ou servidor instável",
+                    title: "Nenhum episódio encontrado. O servidor pode estar em baixo.",
                     season: 1, episode: 1
                 });
             }
         }
         return { meta };
-    },
-
-    pushStalkerEpisode(meta, ep, lIdx, index) {
-        let sNum = 1;
-        let eNum = index + 1;
-        
-        const name = (ep.name || ep.title || "").toString().toLowerCase().trim();
-        const seasonName = (ep.forced_season_name || "").toString().toLowerCase().trim();
-
-        const matchS = seasonName.match(/(?:season|temporada|s|t)\s*(\d+)/i);
-        if (matchS) sNum = parseInt(matchS[1]);
-
-        const matchSE = name.match(/s(\d+)[\s\-_]*e(\d+)/i);
-        if (matchSE) {
-            sNum = parseInt(matchSE[1]);
-            eNum = parseInt(matchSE[2]);
-        } else {
-            const matchE = name.match(/(?:ep|e|episodio)\s*(\d+)/i);
-            if (matchE) eNum = parseInt(matchE[1]);
-            else if (/^\d+$/.test(name)) eNum = parseInt(name); 
-        }
-
-        const finalCmd = ep.cmd ? ep.cmd : ep.id;
-
-        meta.videos.push({
-            id: `xlv:${lIdx}:${encodeURIComponent(finalCmd)}:${encodeURIComponent(ep.name || 'Episódio')}`,
-            title: ep.name || `Episódio ${eNum}`,
-            season: sNum,
-            episode: eNum
-        });
     },
 
     async getStreams(type, id, configBase64, host) {
@@ -428,9 +410,7 @@ const addon = {
                         }
                     }
                 }
-            } catch(e) { 
-                console.error("[STREAM ERROR]", e.message); 
-            }
+            } catch(e) {}
 
             if (!directAdded) {
                 let fallbackUrl = decodeURIComponent(sId).split('|')[0].replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
