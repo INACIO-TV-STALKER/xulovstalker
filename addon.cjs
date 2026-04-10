@@ -77,11 +77,11 @@ const addon = {
             { type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿` }
         ])).flat();
         return { 
-            id: "org.xulov.stalker.v800", version: "8.0.0", 
+            id: "org.xulov.stalker.v900", version: "9.0.0", 
             name: "XuloV Hub PRO", 
             resources: ["catalog", "stream", "meta"], 
             types: ["tv", "movie", "series"], 
-            idPrefixes: ["xlv800:"], catalogs 
+            idPrefixes: ["xlv900:"], catalogs 
         };
     },
 
@@ -98,7 +98,7 @@ const addon = {
                 const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers }));
                 const raw = res.data?.js?.data || res.data?.js || [];
                 return { metas: (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => ({
-                    id: `xlv800:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
+                    id: `xlv900:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
                     name: m.name || m.title, type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
                 }))};
             }
@@ -122,46 +122,54 @@ const addon = {
                 const opts = this.getAxiosOpts(config, { headers: auth.authData.headers });
                 const apiBase = `${auth.api}sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                 
-                // 1. Obter Temporadas
+                // 1. Obter primeira camada (Temporadas)
                 const rSeasons = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${sId.split(':')[0]}`, opts);
-                const seasons = Object.values(rSeasons.data?.js?.data || rSeasons.data?.js || {});
+                const firstLevel = Object.values(rSeasons.data?.js?.data || rSeasons.data?.js || {});
 
-                for (const s of seasons) {
-                    const sNum = parseInt((s.name || "").match(/\d+/)?.[0] || 1);
-                    const seasonId = s.id || s.cmd;
+                for (const item of firstLevel) {
+                    const sNum = parseInt((item.name || "").match(/\d+/)?.[0] || 1);
+                    const folderId = item.id || item.cmd;
                     let seasonVideos = [];
 
-                    // --- PAGINAÇÃO AGRESSIVA ---
-                    // Fazemos 5 tentativas de página para garantir que apanhamos todos os episódios (ex: os 13 de Money Heist)
-                    for (let p = 1; p <= 5; p++) {
-                        const rEps = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${seasonId}&p=${p}`, opts);
+                    // 2. Extrair Episódios com Codificação Absoluta de URL (Isto resolve as 5 temporadas)
+                    for (let p = 1; p <= 10; p++) {
+                        const rEps = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${encodeURIComponent(folderId)}&p=${p}`, opts);
                         const epsRaw = rEps.data?.js?.data || rEps.data?.js || [];
                         const eps = Array.isArray(epsRaw) ? epsRaw : Object.values(epsRaw);
                         
                         if (eps.length === 0) break;
+                        
+                        // Proteção extrema: Se o servidor devolver as temporadas outra vez, sabemos que não tem pastas e este 'item' é o episódio!
+                        if (eps.length > 0 && (eps[0].id === firstLevel[0].id || eps[0].cmd === firstLevel[0].cmd)) {
+                            break; 
+                        }
 
                         eps.forEach((ep) => {
                             const finalCmd = ep.cmd || ep.id;
                             if (finalCmd) {
-                                // Se o título for "Season X", substituímos por número para ser profissional
                                 let cleanTitle = ep.name || ep.title || "";
                                 if (cleanTitle.toLowerCase().includes("season") || cleanTitle === "") {
                                     cleanTitle = `Episódio ${seasonVideos.length + 1}`;
                                 }
-                                
                                 seasonVideos.push({
-                                    id: `xlv800:${lIdx}:${encodeURIComponent(finalCmd)}:${sNum}:${seasonVideos.length + 1}`,
-                                    title: cleanTitle,
-                                    season: sNum,
-                                    episode: seasonVideos.length + 1
+                                    id: `xlv900:${lIdx}:${encodeURIComponent(finalCmd)}:${sNum}:${seasonVideos.length + 1}`,
+                                    title: cleanTitle, season: sNum, episode: seasonVideos.length + 1
                                 });
                             }
                         });
-                        
-                        // Se a página veio incompleta, não há mais páginas
-                        if (eps.length < 5) break; 
+                        if (eps.length < 10) break; 
                     }
-                    meta.videos.push(...seasonVideos);
+
+                    // Se não extraiu nada de dentro da pasta, o 'item' original era logo o episódio (ex: Minisséries)
+                    if (seasonVideos.length === 0) {
+                        meta.videos.push({
+                            id: `xlv900:${lIdx}:${encodeURIComponent(folderId)}:${sNum}:${meta.videos.length + 1}`,
+                            title: item.name || item.title || `Episódio ${meta.videos.length + 1}`,
+                            season: sNum, episode: meta.videos.length + 1
+                        });
+                    } else {
+                        meta.videos.push(...seasonVideos);
+                    }
                 }
             } catch (e) { console.log("[META ERROR]", e.message); }
         }
@@ -179,27 +187,29 @@ const addon = {
         if (auth) {
             const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 6000 });
             
-            // --- O "SNIPER" ITV ---
-            // Como os teus logs mostraram que só o ITV funciona, ele é a nossa prioridade total.
-            try {
-                const url = `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent(cmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                const res = await axios.get(url, opts);
-                const data = res.data?.js || res.data;
-                
-                console.log(`[FINAL-PROBE] Resposta ITV:`, JSON.stringify(data));
-
-                let link = data.cmd || data.url || (typeof data === 'string' && data.includes('://') ? data : null);
-                if (link && typeof link === 'string' && link.includes('://')) {
-                    streams.push({ 
-                        name: "⚡ Directo MAG PRO", 
-                        url: link.replace(/^(ffrt|ffmpeg)\s+/, "").trim(),
-                        behaviorHints: { notWebReady: true }
-                    });
-                }
-            } catch(e) { console.log("[STREAM ERROR]", e.message); }
+            // O Sniper ataca com 3 munições por segurança, mas o ITV primeiro
+            const typesToTry = ['itv', 'series', 'vod'];
+            
+            for (let t of typesToTry) {
+                try {
+                    const url = `${auth.api}type=${t}&action=create_link&cmd=${encodeURIComponent(cmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                    const res = await axios.get(url, opts);
+                    const data = res.data?.js || res.data;
+                    
+                    let link = data.cmd || data.url || (typeof data === 'string' && data.includes('://') ? data : null);
+                    if (link && typeof link === 'string' && link.includes('://')) {
+                        console.log(`[STREAM FOUND] Tipo: ${t} | Link limpo.`);
+                        streams.push({ 
+                            name: "⚡ Directo PRO", 
+                            url: link.replace(/^(ffrt|ffmpeg)\s+/, "").trim(),
+                            behaviorHints: { notWebReady: true }
+                        });
+                        break; 
+                    }
+                } catch(e) {}
+            }
         }
 
-        // Backup via Proxy se o direto falhar por IP
         streams.push({ 
             name: "🔄 Proxy Hub", 
             url: `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(cmd)}?type=itv`,
