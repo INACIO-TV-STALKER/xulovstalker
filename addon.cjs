@@ -24,7 +24,7 @@ const getStalkerAuth = function(config, token) {
     if (token) cookie += ` access_token=${token};`;
     return { sn, id1, sig, headers: { 
         "User-Agent": ua, "X-User-Agent": xua, "Cookie": cookie, 
-        "Referer": config.url.replace(/\/$/, "") + "/c/", "Accept": "*/*"
+        "Referer": config.url.replace(/\/$/, "") + "/c/", "Accept": "*/*", "Connection": "Keep-Alive"
     }};
 };
 
@@ -77,11 +77,11 @@ const addon = {
             { type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿` }
         ])).flat();
         return { 
-            id: "org.xulov.stalker.v730", version: "7.3.0", 
+            id: "org.xulov.stalker.v800", version: "8.0.0", 
             name: "XuloV Hub PRO", 
             resources: ["catalog", "stream", "meta"], 
             types: ["tv", "movie", "series"], 
-            idPrefixes: ["xlv730:"], catalogs 
+            idPrefixes: ["xlv800:"], catalogs 
         };
     },
 
@@ -98,7 +98,7 @@ const addon = {
                 const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers }));
                 const raw = res.data?.js?.data || res.data?.js || [];
                 return { metas: (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => ({
-                    id: `xlv730:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
+                    id: `xlv800:${lIdx}:${encodeURIComponent(m.id || m.cmd)}:${encodeURIComponent(m.name || m.title)}`,
                     name: m.name || m.title, type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
                 }))};
             }
@@ -116,48 +116,54 @@ const addon = {
         if (type === "series") {
             const config = this.parseConfig(configBase64)[lIdx];
             const auth = await addon.authenticate(config);
-            if (auth) {
-                try {
-                    const opts = this.getAxiosOpts(config, { headers: auth.authData.headers });
-                    const apiBase = `${auth.api}sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                    
-                    const rSeasons = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${sId.split(':')[0]}`, opts);
-                    const seasons = Object.values(rSeasons.data?.js?.data || rSeasons.data?.js || {});
+            if (!auth) return { meta };
 
-                    for (const s of seasons) {
-                        const sNumMatch = (s.name || "").match(/\d+/);
-                        const sNum = sNumMatch ? parseInt(sNumMatch[0]) : 1;
-                        const seasonId = s.id || s.cmd;
-                        const seenInSeason = new Set();
+            try {
+                const opts = this.getAxiosOpts(config, { headers: auth.authData.headers });
+                const apiBase = `${auth.api}sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                
+                // 1. Obter Temporadas
+                const rSeasons = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${sId.split(':')[0]}`, opts);
+                const seasons = Object.values(rSeasons.data?.js?.data || rSeasons.data?.js || {});
+
+                for (const s of seasons) {
+                    const sNum = parseInt((s.name || "").match(/\d+/)?.[0] || 1);
+                    const seasonId = s.id || s.cmd;
+                    let seasonVideos = [];
+
+                    // --- PAGINAÇÃO AGRESSIVA ---
+                    // Fazemos 5 tentativas de página para garantir que apanhamos todos os episódios (ex: os 13 de Money Heist)
+                    for (let p = 1; p <= 5; p++) {
+                        const rEps = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${seasonId}&p=${p}`, opts);
+                        const epsRaw = rEps.data?.js?.data || rEps.data?.js || [];
+                        const eps = Array.isArray(epsRaw) ? epsRaw : Object.values(epsRaw);
                         
-                        // --- PAGINAÇÃO PROFISSIONAL (Até 10 páginas de episódios) ---
-                        for (let p = 1; p <= 10; p++) {
-                            const rEps = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${seasonId}&p=${p}`, opts);
-                            const epsRaw = rEps.data?.js?.data || rEps.data?.js || [];
-                            const eps = Array.isArray(epsRaw) ? epsRaw : Object.values(epsRaw);
-                            
-                            if (eps.length === 0) break;
+                        if (eps.length === 0) break;
 
-                            eps.forEach((ep) => {
-                                const finalCmd = ep.cmd || ep.id;
-                                if (finalCmd && !seenInSeason.has(finalCmd)) {
-                                    seenInSeason.add(finalCmd);
-                                    let epTitle = ep.name || ep.title;
-                                    // Limpeza de título para não aparecer "Season X" no nome do episódio
-                                    if (!epTitle || epTitle.toLowerCase().includes('season')) {
-                                        epTitle = `Episódio ${seenInSeason.size}`;
-                                    }
-                                    meta.videos.push({
-                                        id: `xlv730:${lIdx}:${encodeURIComponent(finalCmd)}:${sNum}:${seenInSeason.size}`,
-                                        title: epTitle, season: sNum, episode: seenInSeason.size
-                                    });
+                        eps.forEach((ep) => {
+                            const finalCmd = ep.cmd || ep.id;
+                            if (finalCmd) {
+                                // Se o título for "Season X", substituímos por número para ser profissional
+                                let cleanTitle = ep.name || ep.title || "";
+                                if (cleanTitle.toLowerCase().includes("season") || cleanTitle === "") {
+                                    cleanTitle = `Episódio ${seasonVideos.length + 1}`;
                                 }
-                            });
-                            if (eps.length < 10) break; 
-                        }
+                                
+                                seasonVideos.push({
+                                    id: `xlv800:${lIdx}:${encodeURIComponent(finalCmd)}:${sNum}:${seasonVideos.length + 1}`,
+                                    title: cleanTitle,
+                                    season: sNum,
+                                    episode: seasonVideos.length + 1
+                                });
+                            }
+                        });
+                        
+                        // Se a página veio incompleta, não há mais páginas
+                        if (eps.length < 5) break; 
                     }
-                } catch (e) {}
-            }
+                    meta.videos.push(...seasonVideos);
+                }
+            } catch (e) { console.log("[META ERROR]", e.message); }
         }
         return { meta };
     },
@@ -169,33 +175,31 @@ const addon = {
         const config = this.parseConfig(configBase64)[lIdx];
         let streams = [];
 
-        try {
-            const auth = await addon.authenticate(config);
-            if (auth) {
-                const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 });
+        const auth = await addon.authenticate(config);
+        if (auth) {
+            const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 6000 });
+            
+            // --- O "SNIPER" ITV ---
+            // Como os teus logs mostraram que só o ITV funciona, ele é a nossa prioridade total.
+            try {
+                const url = `${auth.api}type=itv&action=create_link&cmd=${encodeURIComponent(cmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                const res = await axios.get(url, opts);
+                const data = res.data?.js || res.data;
                 
-                // PRIORIDADE ABSOLUTA ITV (Confirmado pelos teus logs)
-                const sequences = ['itv', 'series', 'vod'];
-                for (let t of sequences) {
-                    try {
-                        const url = `${auth.api}type=${t}&action=create_link&cmd=${encodeURIComponent(cmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
-                        const res = await axios.get(url, opts);
-                        const data = res.data?.js || res.data;
-                        
-                        let link = data.cmd || data.url || (typeof data === 'string' && data.includes('://') ? data : null);
-                        if (link && typeof link === 'string' && link.includes('://')) {
-                            streams.push({ 
-                                name: "⚡ Directo PRO", 
-                                url: link.replace(/^(ffrt|ffmpeg)\s+/, "").trim(),
-                                behaviorHints: { notWebReady: true }
-                            });
-                            break; 
-                        }
-                    } catch(e) {}
-                }
-            }
-        } catch(e) {}
+                console.log(`[FINAL-PROBE] Resposta ITV:`, JSON.stringify(data));
 
+                let link = data.cmd || data.url || (typeof data === 'string' && data.includes('://') ? data : null);
+                if (link && typeof link === 'string' && link.includes('://')) {
+                    streams.push({ 
+                        name: "⚡ Directo MAG PRO", 
+                        url: link.replace(/^(ffrt|ffmpeg)\s+/, "").trim(),
+                        behaviorHints: { notWebReady: true }
+                    });
+                }
+            } catch(e) { console.log("[STREAM ERROR]", e.message); }
+        }
+
+        // Backup via Proxy se o direto falhar por IP
         streams.push({ 
             name: "🔄 Proxy Hub", 
             url: `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(cmd)}?type=itv`,
