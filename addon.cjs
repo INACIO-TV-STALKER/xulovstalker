@@ -126,23 +126,39 @@ const addon = {
                     const opts = this.getAxiosOpts(config, { headers: auth.authData.headers });
                     const apiBase = `${auth.api}sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                     
-                    const rSeasons = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${sId}`, opts);
-                    const seasons = Object.values(rSeasons.data?.js?.data || rSeasons.data?.js || {});
+                    // 1. Pega as temporadas (ID puro da série)
+                    const rSeasons = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${sId.split(':')[0]}`, opts);
+                    const seasonsRaw = rSeasons.data?.js?.data || rSeasons.data?.js || [];
+                    const seasons = Array.isArray(seasonsRaw) ? seasonsRaw : Object.values(seasonsRaw);
 
                     for (const s of seasons) {
-                        const sNum = parseInt((s.name || "").match(/\d+/)?.[0] || 1);
+                        const sNumMatch = (s.name || "").match(/\d+/);
+                        const sNum = sNumMatch ? parseInt(sNumMatch[0]) : 1;
                         const seasonId = s.id || s.cmd;
                         
+                        // 2. ENTRA NA PASTA DA TEMPORADA (ID: 2282:1)
                         const rEps = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${seasonId}`, opts);
-                        let eps = Object.values(rEps.data?.js?.data || rEps.data?.js || []);
+                        let epsRaw = rEps.data?.js?.data || rEps.data?.js || [];
+                        let eps = Array.isArray(epsRaw) ? epsRaw : Object.values(epsRaw);
 
                         eps.forEach((ep, idx) => {
                             const finalCmd = ep.cmd || ep.id;
+                            const epNum = ep.episode_number || (idx + 1);
+                            
                             if (finalCmd) {
+                                // --- CORREÇÃO DE TÍTULO PRO ---
+                                // Usamos o nome que o servidor deu ao ficheiro. Se não der, geramos "Episódio X".
+                                // Nunca mais vai aparecer "Season 8" aqui.
+                                let epTitle = ep.name || ep.title;
+                                if (!epTitle || epTitle.toLowerCase().includes('season')) {
+                                    epTitle = `Episódio ${epNum}`;
+                                }
+
                                 meta.videos.push({
-                                    id: `xlv710:${lIdx}:${encodeURIComponent(finalCmd)}:${sNum}:${idx + 1}`,
-                                    title: ep.name || `Episódio ${idx + 1}`,
-                                    season: sNum, episode: idx + 1
+                                    id: `xlv710:${lIdx}:${encodeURIComponent(finalCmd)}:${sNum}:${epNum}`,
+                                    title: epTitle,
+                                    season: sNum,
+                                    episode: parseInt(epNum)
                                 });
                             }
                         });
@@ -157,21 +173,23 @@ const addon = {
         const parts = id.split(":");
         const lIdx = parseInt(parts[1]);
         const cmd = decodeURIComponent(parts[2]);
+        const seasonNum = parts[3];
+        const epNum = parts[4];
         
         const config = this.parseConfig(configBase64)[lIdx];
         let streams = [];
-        let successType = 'itv'; // Vamos diretos ao "segredo" que o teu log revelou!
 
         try {
             const auth = await addon.authenticate(config);
             if (auth) {
                 const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 });
                 
-                // Coloquei o ITV em primeiro lugar porque sabemos que é o que o teu servidor quer
+                // --- MANTEMOS A LÓGICA DE PROBE E LOGS (IMITAÇÃO TIVIMATE) ---
                 const probes = [
-                    { t: 'itv', q: `&cmd=${encodeURIComponent(cmd)}` },
                     { t: 'vod', q: `&cmd=${encodeURIComponent(cmd)}` },
-                    { t: 'series', q: `&cmd=${encodeURIComponent(cmd)}` }
+                    { t: 'series', q: `&cmd=${encodeURIComponent(cmd)}` },
+                    { t: 'itv', q: `&cmd=${encodeURIComponent(cmd)}` },
+                    { t: 'series', q: `&movie_id=${cmd.split(':')[0]}&season=${seasonNum}&episode=${epNum}` }
                 ];
 
                 for (let probe of probes) {
@@ -180,41 +198,30 @@ const addon = {
                         const res = await axios.get(url, opts);
                         const data = res.data?.js || res.data;
                         
-                        let link = data.cmd || data.url || (typeof data === 'string' && data.includes('://') ? data : null);
-                        
-                        if (link && typeof link === 'string' && link.includes('://')) {
-                            successType = probe.t; // Captura o tipo exato que o servidor aceitou
-                            const cleanLink = link.replace(/^(ffrt|ffmpeg)\s+/, "").trim();
-                            
-                            // 1. O Proxy Hub AGORA USA O TIPO CORRETO DINAMICAMENTE (Foi isto que faltou antes!)
-                            streams.push({ 
-                                name: `🔄 Proxy Hub (${probe.t.toUpperCase()})`, 
-                                url: `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(cmd)}?type=${successType}`,
-                                behaviorHints: { notWebReady: true } 
-                            });
+                        // Imprime a resposta exata do servidor no log do Render
+                        console.log(`[PROBE] Tipo: ${probe.t} | Resposta:`, JSON.stringify(data).substring(0, 150));
 
-                            // 2. Link Direto caso o Stremio não precise de User-Agent neste server
+                        let link = data.cmd || data.url || (typeof data === 'string' && data.includes('://') ? data : null);
+                        if (link && typeof link === 'string' && link.includes('://')) {
                             streams.push({ 
-                                name: `⚡ Directo`, 
-                                url: cleanLink,
+                                name: `⚡ Directo PRO`, 
+                                url: link.replace(/^(ffrt|ffmpeg)\s+/, "").trim(),
                                 behaviorHints: { notWebReady: true }
                             });
-                            
                             break; 
                         }
-                    } catch(e) {}
+                    } catch(e) {
+                        console.log(`[PROBE ERROR] Tipo: ${probe.t} | ${e.message}`);
+                    }
                 }
             }
         } catch(e) {}
 
-        // Fallback de segurança caso a API engasgue
-        if (streams.length === 0) {
-            streams.push({ 
-                name: "🔄 Proxy Fallback", 
-                url: `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(cmd)}?type=${successType}`,
-                behaviorHints: { notWebReady: true } 
-            });
-        }
+        streams.push({ 
+            name: "🔄 Proxy Hub", 
+            url: `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(cmd)}?type=series`,
+            behaviorHints: { notWebReady: true } 
+        });
         
         return { streams };
     }
