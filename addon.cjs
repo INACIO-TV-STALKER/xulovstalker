@@ -147,7 +147,7 @@ const addon = {
             catalogs.push({ type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿`, extra: [{ name: "genre", options: serG.filter(Boolean) }, { name: "skip" }] });
         }));
         const addonName = "XuloV Hub";
-        const m = { id: "org.xulov.stalker", version: "5.4.0", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
+        const m = { id: "org.xulov.stalker", version: "5.5.0", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
         setCache(cacheKey, m, 60); return m;
     },
 
@@ -214,7 +214,6 @@ const addon = {
 
             try {
                 if (config.type === 'xtream') {
-                    // Lógica Xtream mantida
                     const b = config.url.trim().replace(/\/$/, "");
                     const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
                     const res = await axios.get(`${api}&action=get_series_info&series_id=${sId}`, this.getAxiosOpts(config, { timeout: 10000 }));
@@ -232,63 +231,72 @@ const addon = {
                         });
                     }
                 } else {
-                    // NOVA LÓGICA STALKER PARA DESCOMPACTAR TEMPORADAS
                     const auth = await addon.authenticate(config);
                     if (auth) {
                         const apiBase = `${auth.api}sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                         const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 });
+                        let itemsFound = false;
 
-                        // 1. Obter a lista de "Temporadas" (que o teu servidor envia como se fossem ficheiros)
-                        let rFirst = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${sId}&force_ch_link_check=1`, opts);
-                        let levels = rFirst.data?.js?.data || rFirst.data?.js || [];
-                        levels = Array.isArray(levels) ? levels : Object.values(levels);
+                        try {
+                            const rInfo = await axios.get(`${apiBase}&type=vod&action=get_video_info&video_id=${sId}`, opts);
+                            let vInfo = rInfo.data?.js?.data || rInfo.data?.js || {};
+                            if (Array.isArray(vInfo)) vInfo = vInfo[0] || {};
 
-                        for (let i = 0; i < levels.length; i++) {
-                            let item = levels[i];
-                            if (!item) continue;
-
-                            // Tentar descobrir o número da temporada pelo nome (Ex: "Season 3")
-                            let sNum = parseInt((item.name || "").match(/season\s*(\d+)|temporada\s*(\d+)/i)?.[1] || (item.name || "").match(/\d+/)?.[0]) || (i + 1);
-
-                            // Verificar se o item tem episódios lá dentro (campo "series")
-                            let seriesArr = [];
-                            if (item.series) {
-                                seriesArr = typeof item.series === 'string' ? item.series.split(',') : (Array.isArray(item.series) ? item.series : []);
-                            } else {
-                                // Se não tem campo series, pedimos detalhes do item para forçar a descoberta
-                                let rInfo = await axios.get(`${apiBase}&type=vod&action=get_movie_info&movie_id=${item.id || item.cmd}`, opts);
-                                let info = rInfo.data?.js;
-                                if (info && info.series) {
-                                    seriesArr = typeof info.series === 'string' ? info.series.split(',') : (Array.isArray(info.series) ? info.series : []);
-                                }
-                            }
-
-                            if (seriesArr.length > 0) {
-                                // Temos episódios! Vamos criá-los um a um
-                                seriesArr.forEach((epVal, index) => {
-                                    let eNum = parseInt(epVal) || (index + 1);
+                            if (vInfo && vInfo.series && Array.isArray(vInfo.series) && vInfo.series.length > 0) {
+                                vInfo.series.forEach((epVal, idx) => {
+                                    let epNum = typeof epVal === 'object' ? (epVal.episode || idx+1) : epVal;
+                                    let epName = typeof epVal === 'object' ? (epVal.name || epVal.title || `Episódio ${epNum}`) : `Episódio ${epNum}`;
+                                    let finalCmd = typeof epVal === 'object' && epVal.cmd ? epVal.cmd : `${sId}|${epNum}`;
                                     meta.videos.push({
-                                        // Injetamos "|||" para o getStream saber qual episódio pedir depois
-                                        id: `xlv:${lIdx}:${encodeURIComponent((item.cmd || item.id) + "|||" + eNum)}:${encodeURIComponent(item.name || "Ep")}`,
-                                        title: `Episódio ${eNum}`,
-                                        season: sNum,
-                                        episode: eNum
+                                        id: `xlv:${lIdx}:${encodeURIComponent(finalCmd)}:${encodeURIComponent(epName)}`,
+                                        title: epName, season: 1, episode: parseInt(epNum)
                                     });
                                 });
-                            } else {
-                                // Fallback se não houver array de episódios (trata como episódio único)
-                                meta.videos.push({
-                                    id: `xlv:${lIdx}:${encodeURIComponent(item.cmd || item.id)}:${encodeURIComponent(item.name || "Ep")}`,
-                                    title: item.name || `Episódio ${i+1}`,
-                                    season: sNum,
-                                    episode: 1
-                                });
+                                itemsFound = true;
                             }
+                        } catch(e) {}
+
+                        if (!itemsFound) {
+                            const fetchStalkerEps = async (parentId, currentSeason, depth = 0) => {
+                                let foundEps = []; if (depth > 3) return foundEps;
+                                try {
+                                    let res = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${parentId}&force_ch_link_check=1`, opts);
+                                    let items = res.data?.js?.data || res.data?.js || [];
+                                    items = Array.isArray(items) ? items : Object.values(items);
+
+                                    for (let i = 0; i < items.length; i++) {
+                                        let item = items[i]; if (!item) continue;
+                                        let isDir = item.is_dir == 1 || item.is_dir === "1" || (!item.cmd && item.id);
+                                        
+                                        if (isDir) {
+                                            let nameStr = item.name || item.title || "";
+                                            let sNum = parseInt(nameStr.match(/(?:season|temporada|s)\s*(\d+)/i)?.[1] || nameStr.match(/\d+/)?.[0]) || currentSeason;
+                                            let subEps = await fetchStalkerEps(item.id || item.cmd, sNum, depth + 1);
+                                            foundEps.push(...subEps);
+                                        } else {
+                                            let epName = item.name || item.title || `Episódio ${i + 1}`;
+                                            let finalCmd = item.cmd || item.id;
+                                            let eNum = parseInt(epName.match(/(?:ep|e|episodio)\s*(\d+)/i)?.[1]) || (i + 1);
+
+                                            foundEps.push({
+                                                // AJUSTE: Passamos o comando do episódio E o índice (eNum) para o getStreams saber o que pedir
+                                                id: `xlv:${lIdx}:${encodeURIComponent(finalCmd + '|' + eNum)}:${encodeURIComponent(epName)}`,
+                                                title: epName, season: currentSeason, episode: eNum
+                                            });
+                                        }
+                                    }
+                                } catch (err) {}
+                                return foundEps;
+                            };
+                            meta.videos = await fetchStalkerEps(sId, 1);
                         }
                         meta.videos.sort((a, b) => (a.season - b.season) || (a.episode - b.episode));
                     }
                 }
-            } catch (e) { console.error("Erro Meta Séries:", e.message); }
+            } catch (e) { }
+            if (meta.videos.length === 0) {
+                meta.videos.push({ id: `xlv:${lIdx}:empty:empty`, title: "Nenhum episódio encontrado.", season: 1, episode: 1 });
+            }
         }
         return { meta };
     },
@@ -315,30 +323,47 @@ const addon = {
                     let realCmd = sId;
                     let seriesQuery = "";
 
-                    // LER A INJEÇÃO MÁGICA DO EPISÓDIO
-                    if (sId.includes("|||")) {
-                        let splitCmd = sId.split("|||");
+                    // AJUSTE: Verificamos se recebemos o índice do episódio (carimbado com | no getMeta)
+                    if (sId.includes("|")) {
+                        let splitCmd = sId.split("|");
                         realCmd = splitCmd[0];
-                        seriesQuery = `&series=${splitCmd[1]}`;
+                        // Se o comando for um ID simples, o servidor Stalker geralmente precisa do parâmetro &series=X
+                        if (!realCmd.includes("://")) {
+                            seriesQuery = `&series=${splitCmd[1]}`;
+                        }
                     }
 
-                    const cmdType = (type === "itv") ? "itv" : "vod";
+                    const cmdType = (type === "tv") ? "itv" : "vod";
                     const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 });
                     
+                    // Tentativa 1: create_link com parâmetro cmd
                     let linkUrl = `${auth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(realCmd)}${seriesQuery}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
                     let res = await axios.get(linkUrl, opts);
                     let cmdUrl = res.data?.js?.cmd || res.data?.js?.url || (typeof res.data?.js === 'string' ? res.data.js : null);
 
+                    // Tentativa 2: Fallback para video_id se o cmd falhar (comum em séries Stalker)
+                    if (!cmdUrl) {
+                        let linkUrlId = `${auth.api}type=${cmdType}&action=create_link&video_id=${encodeURIComponent(realCmd)}${seriesQuery}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
+                        let resId = await axios.get(linkUrlId, opts);
+                        cmdUrl = resId.data?.js?.cmd || resId.data?.js?.url;
+                    }
+
                     if (cmdUrl && typeof cmdUrl === 'string') {
                         let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                         if (cleanUrl.includes('://')) {
-                            streams.push({ name: name, url: cleanUrl, title: `⚡ Directo Stalker`, behaviorHints: { notWebReady: true } });
+                            streams.push({ 
+                                name: name, 
+                                url: cleanUrl, 
+                                title: `⚡ Directo Stalker`, 
+                                behaviorHints: { notWebReady: true } 
+                            });
                         }
                     }
                 }
             } catch(e) {}
         }
         
+        // Mantemos o Proxy Estável como opção, que geralmente resolve problemas de cabeçalhos/IP
         streams.push({ name: name, url: pUrl, title: `🔄 Proxy Estável`, behaviorHints: { notWebReady: true } });
         return { streams };
     }
