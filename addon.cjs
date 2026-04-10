@@ -124,14 +124,16 @@ const addon = {
                 
                 // 1. Obter primeira camada (Temporadas)
                 const rSeasons = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${sId.split(':')[0]}`, opts);
-                const firstLevel = Object.values(rSeasons.data?.js?.data || rSeasons.data?.js || {});
+                const firstLevelRaw = rSeasons.data?.js?.data || rSeasons.data?.js || [];
+                const firstLevel = Array.isArray(firstLevelRaw) ? firstLevelRaw : Object.values(firstLevelRaw);
 
                 for (const item of firstLevel) {
-                    const sNum = parseInt((item.name || "").match(/\d+/)?.[0] || 1);
+                    const sNumMatch = (item.name || "").match(/\d+/);
+                    const sNum = sNumMatch ? parseInt(sNumMatch[0]) : 1;
                     const folderId = item.id || item.cmd;
                     let seasonVideos = [];
 
-                    // 2. Extrair Episódios com Codificação Absoluta de URL (Isto resolve as 5 temporadas)
+                    // 2. Extrair Episódios com Codificação Absoluta de URL
                     for (let p = 1; p <= 10; p++) {
                         const rEps = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${encodeURIComponent(folderId)}&p=${p}`, opts);
                         const epsRaw = rEps.data?.js?.data || rEps.data?.js || [];
@@ -140,7 +142,7 @@ const addon = {
                         if (eps.length === 0) break;
                         
                         // Proteção extrema: Se o servidor devolver as temporadas outra vez, sabemos que não tem pastas e este 'item' é o episódio!
-                        if (eps.length > 0 && (eps[0].id === firstLevel[0].id || eps[0].cmd === firstLevel[0].cmd)) {
+                        if (eps.length > 0 && firstLevel.length > 0 && (eps[0].id === firstLevel[0].id || eps[0].cmd === firstLevel[0].cmd)) {
                             break; 
                         }
 
@@ -160,7 +162,7 @@ const addon = {
                         if (eps.length < 10) break; 
                     }
 
-                    // Se não extraiu nada de dentro da pasta, o 'item' original era logo o episódio (ex: Minisséries)
+                    // Se não extraiu nada de dentro da pasta, o 'item' original era logo o episódio
                     if (seasonVideos.length === 0) {
                         meta.videos.push({
                             id: `xlv900:${lIdx}:${encodeURIComponent(folderId)}:${sNum}:${meta.videos.length + 1}`,
@@ -187,20 +189,19 @@ const addon = {
         if (auth) {
             const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 6000 });
             
-            // O Sniper ataca com 3 munições por segurança, mas o ITV primeiro
+            // PRIORIDADE ITV (Confirmado pelos logs)
             const typesToTry = ['itv', 'series', 'vod'];
-            
             for (let t of typesToTry) {
                 try {
                     const url = `${auth.api}type=${t}&action=create_link&cmd=${encodeURIComponent(cmd)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                     const res = await axios.get(url, opts);
                     const data = res.data?.js || res.data;
-                    
+                    console.log(`[PLAY-LOG] Tentando ${t}:`, JSON.stringify(data).substring(0, 100));
+
                     let link = data.cmd || data.url || (typeof data === 'string' && data.includes('://') ? data : null);
                     if (link && typeof link === 'string' && link.includes('://')) {
-                        console.log(`[STREAM FOUND] Tipo: ${t} | Link limpo.`);
                         streams.push({ 
-                            name: "⚡ Directo PRO", 
+                            name: "⚡ Directo MAG PRO", 
                             url: link.replace(/^(ffrt|ffmpeg)\s+/, "").trim(),
                             behaviorHints: { notWebReady: true }
                         });
@@ -212,7 +213,7 @@ const addon = {
 
         streams.push({ 
             name: "🔄 Proxy Hub", 
-            url: `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(cmd)}?type=itv`,
+            url: `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(cmd)}?type=series`,
             behaviorHints: { notWebReady: true } 
         });
         
