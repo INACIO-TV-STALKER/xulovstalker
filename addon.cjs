@@ -240,12 +240,12 @@ const addon = {
                         const apiBase = `${auth.api}sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                         const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 });
 
+                        // CORREÇÃO AQUI: Removido o {t: 'vod', p: 'category'} para evitar misturar ID da série com Categoria de Filmes.
                         const getStalkerItems = async (catId) => {
                             let attempts = [
+                                {t: 'series', p: 'movie_id'},
                                 {t: 'series', p: 'category'},
-                                {t: 'vod', p: 'category'},
-                                {t: 'vod', p: 'movie_id'},
-                                {t: 'series', p: 'movie_id'}
+                                {t: 'vod', p: 'movie_id'}
                             ];
                             for (let {t, p} of attempts) {
                                 try {
@@ -281,7 +281,7 @@ const addon = {
                             firstLevel = await getStalkerItems(sId);
 
                             if (firstLevel.length === 0) {
-                                for (let t of ['vod', 'series']) {
+                                for (let t of ['series', 'vod']) {
                                     if (firstLevel.length > 0) break;
                                     try {
                                         const rInfo = await axios.get(`${apiBase}&type=${t}&action=get_video_info&video_id=${sId}`, opts);
@@ -385,7 +385,6 @@ const addon = {
                 if (auth) {
                     const decodedCmd = decodeURIComponent(sId);
                     
-                    // SEPARA O ID DA SÉRIE DO NÚMERO DO EPISÓDIO (CASO EXISTA O SÍMBOLO |)
                     let realCmd = decodedCmd;
                     let sNum = null;
                     if (decodedCmd.includes('|')) {
@@ -394,14 +393,12 @@ const addon = {
                         sNum = partsCmd[1];
                     }
 
-                    // 1. TENTA LER COMO LINK DIRETO (Ideal para Filmes e TV que já trazem o URL no ID)
                     let cleanTry = realCmd.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                     if (cleanTry.startsWith('http')) {
                         const titleStr = type === 'movie' ? '🎬 Directo Filme' : (type === 'series' ? '🍿 Directo Série' : '⚡ Directo TV');
                         streams.push({ name: name, url: cleanTry, title: titleStr, behaviorHints: { notWebReady: true } });
                         directAdded = true;
                     } 
-                    // 2. SE NÃO FOR LINK DIRETO, PEDE AO SERVIDOR (Séries e canais com Token)
                     else {
                         const cmdType = (type === "movie" || type === "series") ? "vod" : "itv";
                         const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 });
@@ -438,7 +435,6 @@ const addon = {
             }
 
             if (!directAdded) {
-                // Remove o pipe no fallback caso falhe tudo
                 let fallbackUrl = decodeURIComponent(sId).split('|')[0].replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                 if (fallbackUrl.startsWith('http')) {
                     const titleStr = type === 'movie' ? '🎬 Directo Filme' : (type === 'series' ? '🍿 Directo Série' : '⚡ Directo TV');
