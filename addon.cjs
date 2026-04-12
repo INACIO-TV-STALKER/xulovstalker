@@ -331,46 +331,50 @@ const addon = {
                         realCmd = partsCmd[0];
                         sNum = partsCmd[1];
                     } else if (decodedCmd.includes('|')) {
-                        // Fallback original mantido por segurança
                         let partsCmd = decodedCmd.split('|');
                         realCmd = partsCmd[0];
                         sNum = partsCmd[1];
                     }
 
-                    let cleanTry = realCmd.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-                    if (cleanTry.startsWith('http')) {
-                        const titleStr = type === 'movie' ? '🎬 Directo Filme' : (type === 'series' ? '🍿 Directo Série' : '⚡ Directo TV');
-                        streams.push({ name: name, url: cleanTry, title: titleStr, behaviorHints: { notWebReady: true } });
-                        directAdded = true;
-                    } 
-                    else {
-                        const cmdType = (type === "movie" || type === "series") ? "vod" : "itv";
-                        const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 });
-                        let seriesParam = sNum ? `&series=${sNum}` : '';
-                        
-                        let linkUrl = `${auth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(realCmd)}${seriesParam}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
-                        let res = await axios.get(linkUrl, opts);
-                        let jsData = res.data?.js;
-                        let cmdUrl = jsData?.cmd || jsData?.url || (typeof jsData === 'string' ? jsData : null);
+                    const cmdType = (type === "movie" || type === "series") ? "vod" : "itv";
+                    const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 });
+                    let seriesParam = sNum ? `&series=${sNum}` : '';
+                    
+                    // Passo 1: Pedir o link ao servidor (Sem ignorar este passo crucial)
+                    let linkUrl = `${auth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(realCmd)}${seriesParam}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
+                    let res = await axios.get(linkUrl, opts);
+                    let jsData = res.data?.js;
+                    let cmdUrl = jsData?.cmd || jsData?.url || (typeof jsData === 'string' ? jsData : null);
 
-                        if (!cmdUrl && typeof jsData === 'object' && jsData !== null) {
-                            cmdUrl = Object.values(jsData).find(v => typeof v === 'string' && (v.startsWith('http') || v.includes('://')));
+                    if (!cmdUrl && typeof jsData === 'object' && jsData !== null) {
+                        cmdUrl = Object.values(jsData).find(v => typeof v === 'string' && (v.startsWith('http') || v.includes('://')));
+                    }
+
+                    // Passo 2: Fallback para video_id se o cmd falhar
+                    if (!cmdUrl || cmdUrl.trim() === "") {
+                        let linkUrlId = `${auth.api}type=${cmdType}&action=create_link&video_id=${encodeURIComponent(realCmd)}${seriesParam}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
+                        let resId = await axios.get(linkUrlId, opts);
+                        let jsDataId = resId.data?.js;
+                        cmdUrl = jsDataId?.cmd || jsDataId?.url || (typeof jsDataId === 'string' ? jsDataId : null);
+                    }
+
+                    // Passo 3: Fallback extra para séries mais teimosas
+                    if (!cmdUrl || cmdUrl.trim() === "") {
+                        if (type === "series") {
+                            let linkUrlSeries = `${auth.api}type=series&action=create_link&video_id=${encodeURIComponent(realCmd)}${seriesParam}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
+                            let resSeries = await axios.get(linkUrlSeries, opts);
+                            let jsDataSeries = resSeries.data?.js;
+                            cmdUrl = jsDataSeries?.cmd || jsDataSeries?.url || (typeof jsDataSeries === 'string' ? jsDataSeries : null);
                         }
+                    }
 
-                        if (!cmdUrl || cmdUrl.trim() === "") {
-                            let linkUrlId = `${auth.api}type=${cmdType}&action=create_link&video_id=${encodeURIComponent(realCmd)}${seriesParam}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
-                            let resId = await axios.get(linkUrlId, opts);
-                            let jsDataId = resId.data?.js;
-                            cmdUrl = jsDataId?.cmd || jsDataId?.url || (typeof jsDataId === 'string' ? jsDataId : null);
-                        }
-
-                        if (typeof cmdUrl === 'string' && cmdUrl.trim() !== "") {
-                            let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
-                            if (cleanUrl.includes('://')) {
-                                const titleStr = type === 'movie' ? '🎬 Directo Filme' : (type === 'series' ? '🍿 Directo Série' : '⚡ Directo TV');
-                                streams.push({ name: name, url: cleanUrl, title: titleStr, behaviorHints: { notWebReady: true } });
-                                directAdded = true;
-                            }
+                    // Passo 4: Se o servidor devolveu URL com sucesso
+                    if (typeof cmdUrl === 'string' && cmdUrl.trim() !== "") {
+                        let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+                        if (cleanUrl.includes('://')) {
+                            const titleStr = type === 'movie' ? '🎬 Directo Filme' : (type === 'series' ? '🍿 Directo Série' : '⚡ Directo TV');
+                            streams.push({ name: name, url: cleanUrl, title: titleStr, behaviorHints: { notWebReady: true } });
+                            directAdded = true;
                         }
                     }
                 }
@@ -379,7 +383,7 @@ const addon = {
             }
 
             if (!directAdded) {
-                // Adaptado para limpar ambos os separadores de fallback
+                // Fallback geral (último recurso)
                 let fallbackUrl = decodeURIComponent(sId).split('|||')[0].split('|')[0].replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                 if (fallbackUrl.startsWith('http')) {
                     const titleStr = type === 'movie' ? '🎬 Directo Filme' : (type === 'series' ? '🍿 Directo Série' : '⚡ Directo TV');
