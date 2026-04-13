@@ -399,4 +399,3 @@ const addon = {
 };
 
 module.exports = addon;
-
