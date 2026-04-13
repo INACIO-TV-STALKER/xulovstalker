@@ -87,7 +87,10 @@ const addon = {
             const data = JSON.parse(decoded);
             return data.lists || []; 
         } 
-        catch (e) { return []; }
+        catch (e) { 
+            console.error("[CONFIG ERROR] Falha ao descodificar a configuração Base64:", e.message);
+            return []; 
+        }
     },
 
     async authenticate(config) {
@@ -95,27 +98,33 @@ const addon = {
         const cacheKey = `auth_${config.url}_${config.mac || 'nomac'}`;
         const cachedAuth = getCache(cacheKey);
         if (cachedAuth) return cachedAuth;
+        
+        console.log(`[AUTH] Iniciando autenticação Stalker para MAC: ${config.mac || 'Vazio'}`);
         var authData = getStalkerAuth(config, null);
         var baseUrl = config.url.trim().replace(/\/c\/?$/, "").replace(/\/portal\.php\/?$/, "");
         if (!baseUrl.endsWith('/')) baseUrl += '/';
         var url = baseUrl + "portal.php";
+        
         try {
             var hUrl = url + "?type=stb&action=handshake&sn=" + authData.sn + "&device_id=" + authData.id1 + "&JsHttpRequest=1-0";
             var res = await axios.get(hUrl, this.getAxiosOpts(config, { headers: authData.headers, timeout: 10000 }));
             var token = res.data?.js?.token || res.data?.token || null;
             if (token) {
+                console.log(`[AUTH SUCCESS] Token obtido com sucesso para ${baseUrl}`);
                 const finalAuth = { token: token, api: url + "?", authData: getStalkerAuth(config, token) };
                 setCache(cacheKey, finalAuth, 60);
                 return finalAuth;
             }
+            console.warn(`[AUTH WARNING] Resposta sem token para ${baseUrl}`);
             return null;
         } catch (e) { 
-            console.error("[AUTH ERROR] Falha no login Stalker:", e.message);
+            console.error(`[AUTH ERROR] Falha no login Stalker (${baseUrl}):`, e.message);
             return null; 
         }
     },
 
     async getManifest(configBase64) {
+        console.log("[MANIFEST] Pedido de Manifest recebido.");
         const cacheKey = `manifest_${configBase64}`;
         const cached = getCache(cacheKey); if (cached) return cached;
         const lists = this.parseConfig(configBase64);
@@ -141,17 +150,20 @@ const addon = {
                         tvG = tvG.concat(g1); movG = movG.concat(g2); serG = serG.concat(g3);
                     }
                 }
-            } catch(e) { console.error(`[MANIFEST ERROR] Falha ao carregar lista ${i}:`, e.message); }
+            } catch(e) { console.error(`[MANIFEST ERROR] Falha ao carregar categorias da lista ${i}:`, e.message); }
             catalogs.push({ type: "tv", id: `cat_${i}`, name: l.name || `Lista ${i+1}`, extra: [{ name: "genre", options: tvG.filter(Boolean) }, { name: "skip" }] });
             catalogs.push({ type: "movie", id: `mov_${i}`, name: `${l.name || `Lista ${i+1}`} 🎬`, extra: [{ name: "genre", options: movG.filter(Boolean) }, { name: "skip" }] });
             catalogs.push({ type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿`, extra: [{ name: "genre", options: serG.filter(Boolean) }, { name: "skip" }] });
         }));
         const addonName = lists.map(l => l.name).filter(Boolean).join(" + ") || "XuloV Hub";
         const m = { id: "org.xulov.stalker", version: "5.3.0", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
-        setCache(cacheKey, m, 60); return m;
+        setCache(cacheKey, m, 60); 
+        console.log("[MANIFEST] Manifest gerado com sucesso.");
+        return m;
     },
 
     async getCatalog(type, id, extra, configBase64) {
+        console.log(`[CATALOG] Pedido: type=${type}, id=${id}, genre=${extra.genre || 'N/A'}, skip=${extra.skip || 0}`);
         const lists = this.parseConfig(configBase64);
         const lIdx = parseInt(id.split('_')[1]);
         const config = lists[lIdx]; if (!config) return { metas: [] };
@@ -200,11 +212,12 @@ const addon = {
                     });
                 }
             }
-        } catch (e) { console.error("[CATALOG ERROR]", e.message); }
+        } catch (e) { console.error(`[CATALOG ERROR] Erro ao carregar catálogo:`, e.message); }
         return { metas };
     },
 
     async getMeta(type, id, configBase64) {
+        console.log(`[META] Pedido: type=${type}, id=${id}`);
         const parts = id.split(":");
         const lIdx = parseInt(parts[1]);
         const sId = decodeURIComponent(parts[2]);
@@ -240,7 +253,6 @@ const addon = {
                         const apiBase = `${auth.api}sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                         const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 });
 
-                        // LÓGICA STALKER PARA DESCOMPACTAR TEMPORADAS (Importada do Ficheiro 2)
                         let rFirst = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${sId}&force_ch_link_check=1`, opts);
                         let levels = rFirst.data?.js?.data || rFirst.data?.js || [];
                         levels = Array.isArray(levels) ? levels : Object.values(levels);
@@ -284,20 +296,24 @@ const addon = {
                         meta.videos.sort((a, b) => (a.season - b.season) || (a.episode - b.episode));
                     }
                 }
-            } catch (e) { console.error("Erro Meta:", e); }
+            } catch (e) { console.error(`[META ERROR] Erro ao extrair info da série ${id}:`, e.message); }
 
             if (meta.videos.length === 0) {
+                console.warn(`[META WARNING] Nenhum episódio encontrado para a série: ${id}`);
                 meta.videos.push({
                     id: `xlv:${lIdx}:empty:empty`,
                     title: "Nenhum episódio encontrado ou servidor instável",
                     season: 1, episode: 1
                 });
+            } else {
+                console.log(`[META] Série processada com sucesso: ${meta.videos.length} episódios encontrados.`);
             }
         }
         return { meta };
     },
 
     async getStreams(type, id, configBase64, host) {
+        console.log(`[STREAMS] Pedido de stream: type=${type}, id=${id}`);
         const parts = id.split(":"); const lIdx = parseInt(parts[1]); const sId = parts[2];
         const name = decodeURIComponent(parts[3] || "Stream");
         const lists = this.parseConfig(configBase64); const config = lists[lIdx];
@@ -315,6 +331,7 @@ const addon = {
             } else if (type === 'series') {
                 streams.push({ name: name, url: `${b}/series/${config.user}/${config.pass}/${sId}`, title: `🍿 Directo Série`, behaviorHints: { notWebReady: true } });
             }
+            console.log(`[STREAMS] Link gerado (Xtream): ${type}`);
         } 
         else {
             try {
@@ -325,7 +342,6 @@ const addon = {
                     let realCmd = decodedCmd;
                     let sNum = null;
                     
-                    // Adaptado para ler a separação "|||" vinda do getMeta de Séries
                     if (decodedCmd.includes('|||')) {
                         let partsCmd = decodedCmd.split('|||');
                         realCmd = partsCmd[0];
@@ -340,8 +356,11 @@ const addon = {
                     const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 });
                     let seriesParam = sNum ? `&series=${sNum}` : '';
                     
-                    // Passo 1: Pedir o link ao servidor (Sem ignorar este passo crucial)
+                    console.log(`[STREAMS] Stalker - Extraindo link para cmd/id=${realCmd}, series=${sNum || 'N/A'}`);
+
+                    // Passo 1: Pedir o link ao servidor (cmd)
                     let linkUrl = `${auth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(realCmd)}${seriesParam}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
+                    console.log(`[STREAMS] Tentativa 1 (cmd): ${linkUrl}`);
                     let res = await axios.get(linkUrl, opts);
                     let jsData = res.data?.js;
                     let cmdUrl = jsData?.cmd || jsData?.url || (typeof jsData === 'string' ? jsData : null);
@@ -353,41 +372,58 @@ const addon = {
                     // Passo 2: Fallback para video_id se o cmd falhar
                     if (!cmdUrl || cmdUrl.trim() === "") {
                         let linkUrlId = `${auth.api}type=${cmdType}&action=create_link&video_id=${encodeURIComponent(realCmd)}${seriesParam}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
+                        console.log(`[STREAMS] Tentativa 2 (video_id): ${linkUrlId}`);
                         let resId = await axios.get(linkUrlId, opts);
                         let jsDataId = resId.data?.js;
                         cmdUrl = jsDataId?.cmd || jsDataId?.url || (typeof jsDataId === 'string' ? jsDataId : null);
                     }
 
-                    // Passo 3: Fallback extra para séries mais teimosas
+                    // Passo 3: Fallback extra para séries mais teimosas (type=series)
                     if (!cmdUrl || cmdUrl.trim() === "") {
                         if (type === "series") {
                             let linkUrlSeries = `${auth.api}type=series&action=create_link&video_id=${encodeURIComponent(realCmd)}${seriesParam}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
+                            console.log(`[STREAMS] Tentativa 3 (type=series): ${linkUrlSeries}`);
                             let resSeries = await axios.get(linkUrlSeries, opts);
                             let jsDataSeries = resSeries.data?.js;
                             cmdUrl = jsDataSeries?.cmd || jsDataSeries?.url || (typeof jsDataSeries === 'string' ? jsDataSeries : null);
                         }
                     }
 
-                    // Passo 4: Se o servidor devolveu URL com sucesso
+                    // Passo 4: NOVO Fallback (movie_id) muito usado para VOD/Series
+                    if (!cmdUrl || cmdUrl.trim() === "") {
+                        if (type === "series" || type === "movie") {
+                            let linkUrlMovie = `${auth.api}type=vod&action=create_link&movie_id=${encodeURIComponent(realCmd)}${seriesParam}&sn=${auth.authData.sn}&token=${auth.token}&force_ch_link_check=1&JsHttpRequest=1-0`;
+                            console.log(`[STREAMS] Tentativa 4 (movie_id): ${linkUrlMovie}`);
+                            let resMovie = await axios.get(linkUrlMovie, opts);
+                            let jsDataMovie = resMovie.data?.js;
+                            cmdUrl = jsDataMovie?.cmd || jsDataMovie?.url || (typeof jsDataMovie === 'string' ? jsDataMovie : null);
+                        }
+                    }
+
+                    // Passo Final: Analisar e adicionar o URL devolvido
                     if (typeof cmdUrl === 'string' && cmdUrl.trim() !== "") {
+                        console.log(`[STREAMS] Sucesso! URL original recebido: ${cmdUrl}`);
                         let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                         if (cleanUrl.includes('://')) {
                             const titleStr = type === 'movie' ? '🎬 Directo Filme' : (type === 'series' ? '🍿 Directo Série' : '⚡ Directo TV');
                             streams.push({ name: name, url: cleanUrl, title: titleStr, behaviorHints: { notWebReady: true } });
                             directAdded = true;
                         }
+                    } else {
+                        console.warn(`[STREAMS WARNING] Nenhuma tentativa devolveu link válido para ${id}`);
                     }
                 }
             } catch(e) { 
-                console.error("[STREAM ERROR]", e.message); 
+                console.error(`[STREAM ERROR] Falha no processo de link Stalker para ${id}:`, e.message); 
             }
 
             if (!directAdded) {
-                // Fallback geral (último recurso)
+                // Fallback geral (último recurso bruto)
                 let fallbackUrl = decodeURIComponent(sId).split('|||')[0].split('|')[0].replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                 if (fallbackUrl.startsWith('http')) {
                     const titleStr = type === 'movie' ? '🎬 Directo Filme' : (type === 'series' ? '🍿 Directo Série' : '⚡ Directo TV');
                     streams.push({ name: name, url: fallbackUrl, title: titleStr, behaviorHints: { notWebReady: true } });
+                    console.log(`[STREAMS] Aplicado fallback bruto direto.`);
                 }
             }
         }
