@@ -204,7 +204,7 @@ const addon = {
         return { metas };
     },
 
-            async getMeta(type, id, configBase64) {
+    async getMeta(type, id, configBase64) {
         const parts = id.split(":");
         const lIdx = parseInt(parts[1]);
         const sId = decodeURIComponent(parts[2]);
