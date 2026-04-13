@@ -204,7 +204,7 @@ const addon = {
         return { metas };
     },
 
-        async getMeta(type, id, configBase64) {
+            async getMeta(type, id, configBase64) {
         const parts = id.split(":");
         const lIdx = parseInt(parts[1]);
         const sId = decodeURIComponent(parts[2]);
@@ -240,10 +240,8 @@ const addon = {
                         const apiBase = `${auth.api}sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                         const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 });
 
-                        // --- LOG DE DIAGNÓSTICO 1 ---
+                        // LÓGICA STALKER PARA DESCOMPACTAR TEMPORADAS (Importada do Ficheiro 2)
                         let rFirst = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${sId}&force_ch_link_check=1`, opts);
-                        console.log("--- DEBUG STALKER (LISTA): ---", JSON.stringify(rFirst.data, null, 2));
-
                         let levels = rFirst.data?.js?.data || rFirst.data?.js || [];
                         levels = Array.isArray(levels) ? levels : Object.values(levels);
 
@@ -258,10 +256,6 @@ const addon = {
                                 seriesArr = typeof item.series === 'string' ? item.series.split(',') : (Array.isArray(item.series) ? item.series : []);
                             } else {
                                 let rInfo = await axios.get(`${apiBase}&type=vod&action=get_movie_info&movie_id=${item.id || item.cmd}`, opts);
-                                
-                                // --- LOG DE DIAGNÓSTICO 2 ---
-                                console.log("--- DEBUG STALKER (INFO ITEM): ---", JSON.stringify(rInfo.data, null, 2));
-                                
                                 let info = rInfo.data?.js;
                                 if (info && info.series) {
                                     seriesArr = typeof info.series === 'string' ? info.series.split(',') : (Array.isArray(info.series) ? info.series : []);
