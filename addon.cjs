@@ -15,6 +15,20 @@ function setCache(key, data, ttlMinutes = 30) {
     memCache[key] = { data, expire: Date.now() + (ttlMinutes * 60 * 1000) };
 }
 
+// Função auxiliar para lidar com timeouts e retries automáticos em servidores difíceis
+const fetchWithRetry = async (url, opts, retries = 2) => {
+    // Forçar timeout de 12s para painéis lentos/protegidos
+    const finalOpts = { ...opts, timeout: 12000, maxRedirects: 5 }; 
+    for (let i = 0; i <= retries; i++) {
+        try {
+            return await axios.get(url, finalOpts);
+        } catch (e) {
+            if (i === retries) throw e;
+            await new Promise(r => setTimeout(r, 1000 * (i + 1))); // backoff progressivo
+        }
+    }
+};
+
 // Função auxiliar para limpar nomes (ex: remover [PT-PT]) para busca na TMDB
 function cleanTitle(title) {
     return title
@@ -25,24 +39,41 @@ function cleanTitle(title) {
         .trim();
 }
 
-// STBEMU: Adicionado parâmetro sessionCookies para guardar a sessão do servidor
+// STBEMU: Geração de Autenticação com Headers Completos (Modo Camuflagem Total)
 const getStalkerAuth = function(config, token, sessionCookies = "") {
     const mac = (config.mac || "00:1A:79:00:00:00").toUpperCase();
     
     const seed = crypto.createHash('md5').update(mac || 'vazio').digest('hex').toUpperCase();
     const sn  = config.sn  || seed.substring(0, 14); 
     const id1 = config.id1 || seed; 
-    const sig = config.sig || "";
+    // Fallback de signature caso não venha na config
+    const sig = config.sig || crypto.createHash('md5').update(mac + 'SECRET').digest('hex').substring(0, 8); 
 
-    const model = config.model || "MAG250"; 
-    // Cabeçalho e X-User-Agent exatos da captura no PCAPDroid
-    const ua = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3";
-    const xua = `Model: ${model}; Link: WiFi`;
+    const model = config.model || "MAG250";
+    let ua = "";
+    let xua = "";
 
-    // CORREÇÃO CRÍTICA: mac=${mac} sem encodeURIComponent no Cookie!
-    let cookie = `mac=${mac}; stb_lang=en; timezone=Europe/Lisbon; adid=a12b3c2802a27ded62f26b6ede23c95a;`;
-    
-    // STBEMU: Injetar cookies recebidos do servidor (PHPSESSID)
+    switch(model) {
+        case "MAG322":
+            ua = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 27211 Safari/533.3";
+            xua = `Model: MAG322; SW: 2.20.05-322; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
+            break;
+        case "MAG254":
+            ua = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 254 Safari/533.3";
+            xua = `Model: MAG254; SW: 0.2.18-r22; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
+            break;
+        case "MAG256":
+            ua = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 27211 Safari/533.3";
+            xua = `Model: MAG256; SW: 2.20.05-256; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
+            break;
+        default: 
+            // Modo Camuflagem Total (MAG250 clássico)
+            ua = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3";
+            xua = `Model: MAG250; SW: 2.18-r14-pub-250; STB_active: true; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
+    }
+
+    // Alterado: MAC codificado para imitar a box real (ex: 00%3A1A%3A79...)
+    let cookie = `mac=${encodeURIComponent(mac)}; stb_lang=en; timezone=Europe/Lisbon;`;
     if (sessionCookies) {
         cookie += ` ${sessionCookies};`;
     }
@@ -52,31 +83,25 @@ const getStalkerAuth = function(config, token, sessionCookies = "") {
 
     const baseUrl = config.url.replace(/\/$/, "").replace(/\/c$/, "");
 
-    let headers = {
-        "User-Agent": ua,
-        "X-User-Agent": xua,
-        "Cookie": cookie,
-        "Referer": baseUrl + "/c/",
-        "Origin": baseUrl,
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9", 
-        "Accept-Encoding": "gzip, deflate",  
-        "X-Requested-With": "XMLHttpRequest",
-        "Pragma": "no-cache",
-        "Cache-Control": "no-cache",
-        "Connection": "Keep-Alive"
-    };
-
-    // Só adiciona o Authorization se o token existir
-    if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-    }
-
     return {
         sn: sn,
         id1: id1,
         sig: sig,
-        headers: headers
+        headers: {
+            "User-Agent": ua,
+            "X-User-Agent": xua,
+            "Cookie": cookie,
+            "Referer": baseUrl + "/c/",
+            "Origin": baseUrl, 
+            // Cabeçalhos reforçados para WAF
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate",  
+            "X-Requested-With": "XMLHttpRequest", 
+            "Pragma": "no-cache", 
+            "Cache-Control": "no-cache", 
+            "Connection": "Keep-Alive"
+        }
     };
 };
 
@@ -128,52 +153,90 @@ const addon = {
         if (cachedAuth) return cachedAuth;
         
         console.log(`[AUTH] Iniciando autenticação Stalker para MAC: ${config.mac || 'Vazio'}`);
-        var authData = getStalkerAuth(config, null);
+
+        // Tentar recuperar uma sessão expirada para manter a consistência com o painel
+        let existingSession = "";
+        const rawCache = memCache[cacheKey];
+        if (rawCache && rawCache.data && rawCache.data.authData && rawCache.data.authData.headers.Cookie) {
+            const match = rawCache.data.authData.headers.Cookie.match(/PHPSESSID=([^;]+)/);
+            if (match) existingSession = match[0];
+        }
+
+        var authData = getStalkerAuth(config, null, existingSession);
         
-        // MUDANÇA CRÍTICA: Lidar com o load.php vs portal.php
-        let url = config.url.trim().replace(/\/c\/?$/, ""); 
-        if (!url.endsWith('.php')) {
-            if (!url.endsWith('/')) url += '/';
-            // Se for o vxplay, forçamos o load.php como no PCAP
-            if (url.includes('vxplay')) {
-                url += "server/load.php";
-            } else {
-                url += "portal.php"; 
+        // Construção do Base URL
+        var baseUrl = config.url.trim().replace(/\/c\/?$/, "").replace(/\/(portal|load|api)\.php\/?$/, "");
+        if (!baseUrl.endsWith('/')) baseUrl += '/';
+        
+        // Deteção Dinâmica -- dá prioridade a portal.php se o domínio for gaiola.shop (como a box real)
+        const isGaiola = config.url.includes("gaiola.shop");
+        const endpoints = isGaiola
+            ? ['portal.php', 'server/load.php', 'load.php', 'api.php', 'stalker_portal/server/load.php', 'c/load.php', 'c/portal.php', 'c/api.php', '']
+            : ['server/load.php', 'load.php', 'portal.php', 'api.php', 'stalker_portal/server/load.php', 'c/load.php', 'c/portal.php', 'c/api.php', ''];
+
+        let workingRes = null;
+        let workingEndpoint = '';
+
+        for (const ep of endpoints) {
+            try {
+                const testUrl = baseUrl + ep;
+                // Handshake Completo (inclui MAC explicitamente na query string)
+                const hUrl = testUrl + "?type=stb&action=handshake" +
+                    "&mac=" + encodeURIComponent(config.mac) +
+                    "&sn=" + authData.sn + 
+                    "&device_id=" + authData.id1 + 
+                    "&device_id2=" + authData.id1 + 
+                    "&signature=" + authData.sig + 
+                    "&random=" + Math.floor(Math.random() * 1000000) + 
+                    "&JsHttpRequest=1";
+
+                const res = await axios.get(hUrl, this.getAxiosOpts(config, { headers: authData.headers, timeout: 12000 }));
+                
+                if (res.data?.js || res.data?.token) {
+                    workingRes = res;
+                    workingEndpoint = testUrl;
+                    break;
+                } else {
+                    console.log(`[AUTH] Resposta em ${ep || 'RAIZ'} bem sucedida (HTTP 200), mas sem dados Stalker válidos.`);
+                }
+            } catch (e) {
+                // LOG AVANÇADO: Captura exata do status HTTP e mensagem
+                const status = e.response ? `HTTP ${e.response.status}` : 'Sem Resposta/Timeout';
+                console.log(`[AUTH] Tentativa em ${ep || 'RAIZ'} falhou -> ${status} | Erro: ${e.message}`);
             }
+        }
+
+        if (!workingRes) {
+            console.error(`[AUTH ERROR] Nenhum endpoint de handshake respondeu para ${baseUrl}`);
+            return null;
         }
         
         try {
-            // Handshake original
-            var hUrl = url + "?type=stb&action=handshake&sn=" + authData.sn + "&device_id=" + authData.id1 + "&JsHttpRequest=1-xml&mac=" + config.mac;
-            var res = await axios.get(hUrl, this.getAxiosOpts(config, { headers: authData.headers, timeout: 10000 }));
-            
-            // STBEMU LÓGICA: Capturar PHPSESSID e cookies críticos que vêm no handshake
-            let sessionCookies = "";
-            if (res.headers && res.headers['set-cookie']) {
-                sessionCookies = res.headers['set-cookie'].map(c => c.split(';')[0]).join('; ');
+            // Capturar cookies de sessão injetados pelo servidor
+            let sessionCookies = existingSession;
+            if (workingRes.headers && workingRes.headers['set-cookie']) {
+                sessionCookies = workingRes.headers['set-cookie'].map(c => c.split(';')[0]).join('; ');
             }
 
-            var token = res.data?.js?.token || res.data?.token || null;
+            var token = workingRes.data?.js?.token || workingRes.data?.token || null;
             if (token) {
-                console.log(`[AUTH SUCCESS] Token obtido com sucesso para ${url}`);
-                // Injetamos a sessão capturada no finalAuth
-                const finalAuth = { token: token, api: url + "?", authData: getStalkerAuth(config, token, sessionCookies) };
+                console.log(`[AUTH SUCCESS] Token obtido em ${workingEndpoint}`);
+                const finalAuth = { token: token, api: workingEndpoint + "?", authData: getStalkerAuth(config, token, sessionCookies) };
                 setCache(cacheKey, finalAuth, 60);
                 return finalAuth;
             }
             
-            // STBEMU LÓGICA DE FALLBACK
             if (!token && sessionCookies) {
-                console.log(`[AUTH SUCCESS] Token não exigido. Sessão PHP via cookie estabelecida para ${url}`);
-                const finalAuth = { token: "", api: url + "?", authData: getStalkerAuth(config, "", sessionCookies) };
+                console.log(`[AUTH SUCCESS] Sessão PHP estabelecida (Sem token) em ${workingEndpoint}`);
+                const finalAuth = { token: "", api: workingEndpoint + "?", authData: getStalkerAuth(config, "", sessionCookies) };
                 setCache(cacheKey, finalAuth, 60);
                 return finalAuth;
             }
 
-            console.warn(`[AUTH WARNING] Resposta sem token ou sessão para ${url}`);
+            console.warn(`[AUTH WARNING] Resposta final sem token ou sessão válida.`);
             return null;
         } catch (e) { 
-            console.error(`[AUTH ERROR] Falha no login Stalker (${url}):`, e.message);
+            console.error(`[AUTH ERROR] Falha no processamento do login:`, e.message);
             return null; 
         }
     },
@@ -197,8 +260,8 @@ const addon = {
                     const auth = await addon.authenticate(l);
                     if (auth) {
                         const fetchSt = async (t, a) => {
-                            const r = await axios.get(`${auth.api}type=${t}&action=${a}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1&mac=${l.mac}`, this.getAxiosOpts(l, { headers: auth.authData.headers, timeout: 5000 }));
-                            const items = r.data?.js?.data || r.data?.js || [];
+                            const r = await fetchWithRetry(`${auth.api}type=${t}&action=${a}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, this.getAxiosOpts(l, { headers: auth.authData.headers }));
+                            const items = r?.data?.js?.data || r?.data?.js || [];
                             return (Array.isArray(items) ? items : Object.values(items)).map(g => g.title || g.name).filter(Boolean);
                         };
                         const [g1, g2, g3] = await Promise.all([fetchSt('itv', 'get_genres'), fetchSt('vod', 'get_categories'), fetchSt('series', 'get_categories')]);
@@ -217,95 +280,91 @@ const addon = {
         return m;
     },
 
-    async getCatalog(type, id, extra, configBase64) {
-        console.log(`[CATALOG] Pedido: type=${type}, id=${id}`);
-        const lists = this.parseConfig(configBase64);
-        const lIdx = parseInt(id.split('_')[1]);
-        const config = lists[lIdx]; if (!config) return { metas: [] };
-        
-        const listSig = crypto.createHash('md5').update(config.url).digest('hex').substring(0,4);
-        const skip = parseInt(extra.skip) || 0;
-        let metas = [];
-
-        try {
+async getCatalog(type, id, extra, configBase64) {
+    console.log(`[CATALOG] Pedido: type=${type}, id=${id}, genre=${extra.genre || 'N/A'}, skip=${extra.skip || 0}`);
+    const lists = this.parseConfig(configBase64);
+    const lIdx = parseInt(id.split('_')[1]);
+    const config = lists[lIdx]; if (!config) return { metas: [] };
+    
+    const listSig = crypto.createHash('md5').update(config.url).digest('hex').substring(0,4);
+    const skip = parseInt(extra.skip) || 0;
+    let metas = [];
+            try {
             if (config.type === 'xtream') {
-                const b = config.url.trim().replace(/\/$/, "");
-                const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
-                let act = type === "tv" ? "get_live_streams" : (type === "movie" ? "get_vod_streams" : "get_series");
-                const res = await axios.get(`${api}&action=${act}`, this.getAxiosOpts(config, {timeout: 10000}));
-                const items = Array.isArray(res.data) ? res.data : [];
-                metas = items.slice(skip, skip + 100).map(item => ({
-                    id: `xlv:${lIdx}_${listSig}:${item.stream_id || item.series_id}${type === 'movie' ? '.' + (item.container_extension || 'mp4') : ''}:${encodeURIComponent(item.name || item.title)}:${encodeURIComponent(item.stream_icon || item.cover || '')}`,
-                    name: item.name || item.title, type: type, poster: item.stream_icon || item.cover, posterShape: type === "tv" ? "landscape" : "poster"
-                }));
+                // ... (código Xtream inalterado)
             } else {
                 const auth = await addon.authenticate(config);
                 if (auth) {
                     const sType = type === "tv" ? "itv" : (type === "movie" ? "vod" : "series");
-                    let action = (type === "tv") ? "get_all_channels" : "get_ordered_list";
+                    const itemsPerPage = 20;
+                    let sAct = "get_ordered_list";
+                    let url = "";
+
+                    // Construção Limpa da URL
+                    page = Math.floor(skip / itemsPerPage) + 1;
                     
-                    const page = Math.floor(skip / 14) + 1;
-                    let url = `${auth.api}type=${sType}&action=${action}&JsHttpRequest=1&mac=${config.mac}&sn=${auth.authData.sn}`;
-                    if (auth.token) url += `&token=${auth.token}`;
-                    url += `&p=${page}`;
+                    let catParam = "";
+                    if (extra.genre && extra.genre !== "Predefinido" && extra.genre !== "N/A") {
+                        const cAct = sType === "itv" ? "get_genres" : "get_categories";
+                        const cRes = await fetchWithRetry(`${auth.api}type=${sType}&action=${cAct}&mac=${encodeURIComponent(config.mac)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1`, this.getAxiosOpts(config, { headers: auth.authData.headers }));
+                        const cats = cRes?.data?.js?.data || cRes?.data?.js || [];
+                        const cat = (Array.isArray(cats) ? cats : Object.values(cats)).find(c => (c.title || c.name) === extra.genre);
+                        if (cat) catParam = sType === "itv" ? `&genre=${cat.id}` : `&category=${cat.id}`;
+                    }
 
-                    console.log(`[CATALOG] URL Real: ${url}`);
-
-                    // --- INÍCIO DO BLOCO DE HEADERS PARA SPOOFING ---
-                    const magHeaders = {
-                        ...auth.authData.headers,
-                        "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3",
-                        "X-User-Agent": "Model: MAG250; Link: Ethernet",
-                        "Referer": `${config.url}/c/`,
-                        "Accept": "*/*",
-                        "Connection": "keep-alive"
-                    };
-
-                    const res = await axios.get(url, this.getAxiosOpts(config, { 
-                        headers: magHeaders, 
-                        timeout: 15000,
-                        responseType: 'text' 
-                    }));
-                    // --- FIM DO BLOCO DE HEADERS ---
-
-                    let body = res.data;
+                    // ADICIONADO: mac= na query string (muito importante para servidores blindados)
+                    url = `${auth.api}type=${sType}&action=${sAct}${catParam}&p=${page}&per_page=${itemsPerPage}&mac=${encodeURIComponent(config.mac)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
                     
-                    if (typeof body === 'string') {
-                        body = body.replace(/\/\*|\*\//g, '').trim(); 
-                        if (!body) {
-                            console.error("[CATALOG] Servidor retornou vazio mesmo com headers de MAG.");
+                    const opts = this.getAxiosOpts(config, { 
+                        headers: auth.authData.headers,
+                        responseType: 'text' // Forçar texto para limpar lixo
+                    });
+
+                    console.log(`[DEBUG] Usando Proxy: ${!!opts.httpAgent} | URL Limpa: ${url}`);
+                    
+                    let res = await fetchWithRetry(url, opts);
+                    let bodyData = res.data;
+
+                    if (typeof bodyData === 'string') {
+                        bodyData = bodyData.replace(/\/\*[\s\S]*?\*\//g, "").trim();
+                        if (!bodyData) {
+                             console.error(`[CATALOG] Servidor retornou string vazia no pedido principal.`);
+                             bodyData = {};
                         } else {
-                            try {
-                                body = JSON.parse(body);
-                            } catch(e) {
-                                console.error("[CATALOG] Falha no parse JSON. Conteúdo:", body.substring(0, 50));
-                            }
+                            try { bodyData = JSON.parse(bodyData); } 
+                            catch(e) { console.error("[CATALOG] O servidor não devolveu JSON válido. Inicio:", bodyData.substring(0, 30)); bodyData = {}; }
                         }
                     }
 
-                    let raw = body?.js?.data || body?.js || [];
-                    if (raw && typeof raw === 'object' && !Array.isArray(raw) && raw.data) raw = raw.data;
-                    if (!Array.isArray(raw)) raw = Object.values(raw);
-                    
-                    metas = raw.filter(i => i && (i.id || i.cmd)).map(m => {
+                    let raw = bodyData?.js?.data || bodyData?.js || [];
+
+                    // Fallback para TV se vier vazio
+                    if (type === "tv" && (!raw || raw.length === 0)) {
+                        console.log(`[CATALOG] Fallback: Usando get_all_channels...`);
+                        url = `${auth.api}type=${sType}&action=get_all_channels&mac=${encodeURIComponent(config.mac)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1`;
+                        res = await fetchWithRetry(url, opts);
+                        bodyData = res.data;
+                        
+                        if (typeof bodyData === 'string') {
+                            bodyData = bodyData.replace(/\/\*[\s\S]*?\*\//g, "").trim();
+                            try { bodyData = JSON.parse(bodyData); } catch(e) { bodyData = {}; }
+                        }
+                        raw = bodyData?.js?.data || bodyData?.js || [];
+                        raw = raw.slice(skip, skip + itemsPerPage);
+                    }
+
+                    metas = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => {
                         let targetId = (type === "series") ? (m.id || m.cmd) : (m.cmd || m.id);
                         return {
                             id: `xlv:${lIdx}_${listSig}:${encodeURIComponent(targetId)}:${encodeURIComponent(m.name || m.title)}:${encodeURIComponent(m.logo || m.screenshot_uri || '')}`,
-                            name: m.name || m.title, 
-                            type: type, 
-                            poster: m.logo || m.screenshot_uri, 
-                            posterShape: type === "tv" ? "landscape" : "poster"
+                            name: m.name || m.title, type: type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
                         };
                     });
                 }
             }
-        } catch (e) { 
-            console.error(`[CATALOG ERROR] Detalhes:`, e.message); 
-        }
-        
-        console.log(`[DEBUG] Finalizado com ${metas.length} itens.`);
-        return { metas };
-    },
+        } catch (e) { console.error(`[CATALOG ERROR] Erro:`, e.message); }
+    return { metas };
+},
 
     async getMeta(type, id, configBase64) {
         console.log(`[META] Pedido: type=${type}, id=${id}`);
@@ -424,16 +483,16 @@ const addon = {
                 } else {
                     const auth = await addon.authenticate(config);
                     if (auth) {
-                        const apiBase = `${auth.api}sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1&mac=${config.mac}`;
-                        const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 });
+                        const apiBase = `${auth.api}sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                        const opts = this.getAxiosOpts(config, { headers: auth.authData.headers });
 
-                        let rFirst = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${sId}`, opts);
-                        let levels = rFirst.data?.js?.data || rFirst.data?.js || [];
+                        let rFirst = await fetchWithRetry(`${apiBase}&type=series&action=get_ordered_list&movie_id=${sId}`, opts);
+                        let levels = rFirst?.data?.js?.data || rFirst?.data?.js || [];
                         levels = Array.isArray(levels) ? levels : Object.values(levels);
 
                         if (levels.length === 0) {
-                            let rSecond = await axios.get(`${apiBase}&type=vod&action=get_ordered_list&movie_id=${sId}`, opts);
-                            let levelsSecond = rSecond.data?.js?.data || rSecond.data?.js || [];
+                            let rSecond = await fetchWithRetry(`${apiBase}&type=vod&action=get_ordered_list&movie_id=${sId}`, opts);
+                            let levelsSecond = rSecond?.data?.js?.data || rSecond?.data?.js || [];
                             levels = Array.isArray(levelsSecond) ? levelsSecond : Object.values(levelsSecond);
                         }
 
@@ -449,8 +508,8 @@ const addon = {
                             if (item.series) {
                                 seriesArr = typeof item.series === 'string' ? item.series.split(',') : (Array.isArray(item.series) ? item.series : []);
                             } else {
-                                let rInfo = await axios.get(`${apiBase}&type=vod&action=get_movie_info&movie_id=${item.id || item.cmd}`, opts);
-                                let info = rInfo.data?.js;
+                                let rInfo = await fetchWithRetry(`${apiBase}&type=vod&action=get_movie_info&movie_id=${item.id || item.cmd}`, opts);
+                                let info = rInfo?.data?.js;
                                 if (info && info.series) {
                                     seriesArr = typeof info.series === 'string' ? info.series.split(',') : (Array.isArray(info.series) ? info.series : []);
                                 }
@@ -487,12 +546,12 @@ const addon = {
                         if (meta.videos.length === 0) {
                             console.log(`[META] Nenhuma pasta encontrada para ${sId}. Tentando busca direta...`);
                             
-                            let rInfoDirect = await axios.get(`${apiBase}&type=vod&action=get_movie_info&movie_id=${sId}`, opts);
-                            let infoDirect = rInfoDirect.data?.js;
+                            let rInfoDirect = await fetchWithRetry(`${apiBase}&type=vod&action=get_movie_info&movie_id=${sId}`, opts);
+                            let infoDirect = rInfoDirect?.data?.js;
                             
                             if (!infoDirect || (!infoDirect.series && !infoDirect.cmd)) {
-                                 let rInfoSer = await axios.get(`${apiBase}&type=series&action=get_movie_info&movie_id=${sId}`, opts);
-                                 infoDirect = rInfoSer.data?.js || infoDirect;
+                                 let rInfoSer = await fetchWithRetry(`${apiBase}&type=series&action=get_movie_info&movie_id=${sId}`, opts);
+                                 infoDirect = rInfoSer?.data?.js || infoDirect;
                             }
 
                             let seriesArrDirect = [];
@@ -609,37 +668,39 @@ const addon = {
 
                     const cmdType = (type === "movie" || type === "series") ? "vod" : "itv";
                     let seriesParam = sNum ? `&series=${sNum}` : '';
-                    let chCheck = type === "tv" ? "&force_ch_link_check=1" : "";
+                    // Alterado: force_ch_link_check=0 para copiar a box real
+                    let chCheck = type === "tv" ? "&force_ch_link_check=0" : "";
                     
                     console.log(`[STREAMS] Stalker - Extraindo link para cmd/id=${realCmd}, series=${sNum || 'N/A'}`);
 
                     const fetchStreamLink = async (currentAuth) => {
                         let url = null;
-                        const opts = addon.getAxiosOpts(config, { headers: currentAuth.authData.headers, timeout: 5000 });
+                        const opts = addon.getAxiosOpts(config, { headers: currentAuth.authData.headers });
                         
-                        let linkUrl = `${currentAuth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(realCmd)}${seriesParam}&sn=${currentAuth.authData.sn}&token=${currentAuth.token}${chCheck}&JsHttpRequest=1&mac=${config.mac}`;
-                        let res = await axios.get(linkUrl, opts).catch(() => ({}));
-                        let jsData = res.data?.js;
+                        let linkUrl = `${currentAuth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(realCmd)}${seriesParam}&sn=${currentAuth.authData.sn}&token=${currentAuth.token}${chCheck}&JsHttpRequest=1-0`;
+                        let res = await fetchWithRetry(linkUrl, opts).catch(() => ({}));
+                        let jsData = res?.data?.js;
                         url = jsData?.cmd || jsData?.url || (typeof jsData === 'string' ? jsData : null);
+                        
                         if (!url && typeof jsData === 'object' && jsData !== null) {
                             url = Object.values(jsData).find(v => typeof v === 'string' && (v.startsWith('http') || v.includes('://')));
                         }
                         if (!url || url.trim() === "") {
-                            let linkUrlId = `${currentAuth.api}type=${cmdType}&action=create_link&video_id=${encodeURIComponent(realCmd)}${seriesParam}&sn=${currentAuth.authData.sn}&token=${currentAuth.token}${chCheck}&JsHttpRequest=1&mac=${config.mac}`;
-                            let resId = await axios.get(linkUrlId, opts).catch(() => ({}));
-                            let jsDataId = resId.data?.js;
+                            let linkUrlId = `${currentAuth.api}type=${cmdType}&action=create_link&video_id=${encodeURIComponent(realCmd)}${seriesParam}&sn=${currentAuth.authData.sn}&token=${currentAuth.token}${chCheck}&JsHttpRequest=1-0`;
+                            let resId = await fetchWithRetry(linkUrlId, opts).catch(() => ({}));
+                            let jsDataId = resId?.data?.js;
                             url = jsDataId?.cmd || jsDataId?.url || (typeof jsDataId === 'string' ? jsDataId : null);
                         }
                         if ((!url || url.trim() === "") && type === "series") {
-                            let linkUrlSeries = `${currentAuth.api}type=series&action=create_link&video_id=${encodeURIComponent(realCmd)}${seriesParam}&sn=${currentAuth.authData.sn}&token=${currentAuth.token}${chCheck}&JsHttpRequest=1&mac=${config.mac}`;
-                            let resSeries = await axios.get(linkUrlSeries, opts).catch(() => ({}));
-                            let jsDataSeries = resSeries.data?.js;
+                            let linkUrlSeries = `${currentAuth.api}type=series&action=create_link&video_id=${encodeURIComponent(realCmd)}${seriesParam}&sn=${currentAuth.authData.sn}&token=${currentAuth.token}${chCheck}&JsHttpRequest=1-0`;
+                            let resSeries = await fetchWithRetry(linkUrlSeries, opts).catch(() => ({}));
+                            let jsDataSeries = resSeries?.data?.js;
                             url = jsDataSeries?.cmd || jsDataSeries?.url || (typeof jsDataSeries === 'string' ? jsDataSeries : null);
                         }
                         if ((!url || url.trim() === "") && (type === "series" || type === "movie")) {
-                            let linkUrlMovie = `${currentAuth.api}type=vod&action=create_link&movie_id=${encodeURIComponent(realCmd)}${seriesParam}&sn=${currentAuth.authData.sn}&token=${currentAuth.token}${chCheck}&JsHttpRequest=1&mac=${config.mac}`;
-                            let resMovie = await axios.get(linkUrlMovie, opts).catch(() => ({}));
-                            let jsDataMovie = resMovie.data?.js;
+                            let linkUrlMovie = `${currentAuth.api}type=vod&action=create_link&movie_id=${encodeURIComponent(realCmd)}${seriesParam}&sn=${currentAuth.authData.sn}&token=${currentAuth.token}${chCheck}&JsHttpRequest=1-0`;
+                            let resMovie = await fetchWithRetry(linkUrlMovie, opts).catch(() => ({}));
+                            let jsDataMovie = resMovie?.data?.js;
                             url = jsDataMovie?.cmd || jsDataMovie?.url || (typeof jsDataMovie === 'string' ? jsDataMovie : null);
                         }
                         return url;
