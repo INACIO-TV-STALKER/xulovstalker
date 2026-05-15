@@ -2,6 +2,7 @@ const axios = require("axios");
 const crypto = require("crypto");
 const https = require('https'); 
 const { SocksProxyAgent } = require('socks-proxy-agent');
+const authCache = new Map();
 
 // Chave da API TMDB fornecida
 const TMDB_API_KEY = "04057ce87e56ea3234aff745ce9090ea";
@@ -15,20 +16,6 @@ function setCache(key, data, ttlMinutes = 30) {
     memCache[key] = { data, expire: Date.now() + (ttlMinutes * 60 * 1000) };
 }
 
-// Função auxiliar para lidar com timeouts e retries automáticos em servidores difíceis
-const fetchWithRetry = async (url, opts, retries = 2) => {
-    // Forçar timeout de 12s para painéis lentos/protegidos
-    const finalOpts = { ...opts, timeout: 12000, maxRedirects: 5 }; 
-    for (let i = 0; i <= retries; i++) {
-        try {
-            return await axios.get(url, finalOpts);
-        } catch (e) {
-            if (i === retries) throw e;
-            await new Promise(r => setTimeout(r, 1000 * (i + 1))); // backoff progressivo
-        }
-    }
-};
-
 // Função auxiliar para limpar nomes (ex: remover [PT-PT]) para busca na TMDB
 function cleanTitle(title) {
     return title
@@ -39,15 +26,14 @@ function cleanTitle(title) {
         .trim();
 }
 
-// STBEMU: Geração de Autenticação com Headers Completos (Modo Camuflagem Total)
+// STBEMU: Adicionado parâmetro sessionCookies para guardar a sessão do servidor
 const getStalkerAuth = function(config, token, sessionCookies = "") {
     const mac = (config.mac || "00:1A:79:00:00:00").toUpperCase();
     
     const seed = crypto.createHash('md5').update(mac || 'vazio').digest('hex').toUpperCase();
     const sn  = config.sn  || seed.substring(0, 14); 
     const id1 = config.id1 || seed; 
-    // Fallback de signature caso não venha na config
-    const sig = config.sig || crypto.createHash('md5').update(mac + 'SECRET').digest('hex').substring(0, 8); 
+    const sig = config.sig || "";
 
     const model = config.model || "MAG250";
     let ua = "";
@@ -67,13 +53,12 @@ const getStalkerAuth = function(config, token, sessionCookies = "") {
             xua = `Model: MAG256; SW: 2.20.05-256; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
             break;
         default: 
-            // Modo Camuflagem Total (MAG250 clássico)
             ua = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3";
-            xua = `Model: MAG250; SW: 2.18-r14-pub-250; STB_active: true; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
+            xua = `Model: MAG250; SW: 0.2.18-r14; Device ID: ${id1}; Device ID 2: ${id1}; Signature: ${sig}`;
     }
 
-    // Alterado: MAC codificado para imitar a box real (ex: 00%3A1A%3A79...)
     let cookie = `mac=${encodeURIComponent(mac)}; stb_lang=en; timezone=Europe/Lisbon;`;
+    // STBEMU: Injetar cookies recebidos do servidor (PHPSESSID)
     if (sessionCookies) {
         cookie += ` ${sessionCookies};`;
     }
@@ -81,9 +66,7 @@ const getStalkerAuth = function(config, token, sessionCookies = "") {
         cookie += ` token=${token}; access_token=${token};`;
     }
 
-    // [CORREÇÃO REFERER] Garantindo que termina em /c/
-    const baseUrl = config.url.replace(/\/$/, "").replace(/\/(portal|load|api)\.php$/, "").replace(/\/c$/, "");
-    const referer = baseUrl + "/c/";
+    const baseUrl = config.url.replace(/\/$/, "").replace(/\/c$/, "");
 
     return {
         sn: sn,
@@ -93,20 +76,42 @@ const getStalkerAuth = function(config, token, sessionCookies = "") {
             "User-Agent": ua,
             "X-User-Agent": xua,
             "Cookie": cookie,
-            "Referer": referer,
-            "Origin": baseUrl, 
-            // [CORREÇÃO HEADERS] Accept exato da MAG e inclusão do X-Runtime-Info
-            "Accept": "application/json, text/javascript, */*; q=0.01",
-            "X-Runtime-Info": "render: gles; s_type: 250; s_ver: 0.2.18-r14; s_date: Wed Aug 30 11:23:45 2017;",
-            "Accept-Language": "en-US,en;q=0.5",
+            "Authorization": token ? `Bearer ${token}` : undefined,
+            "Referer": baseUrl + "/c/",
+            "Origin": baseUrl, // STBEMU: Alguns WAF exigem a Origin
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9", 
             "Accept-Encoding": "gzip, deflate",  
-            "X-Requested-With": "XMLHttpRequest", 
-            "Pragma": "no-cache", 
-            "Cache-Control": "no-cache", 
+            "X-Requested-With": "XMLHttpRequest", // STBEMU CRÍTICO: Essencial para Stalker Portal em PHP
+            "Pragma": "no-cache", // STBEMU: Evitar cache de firewalls
+            "Cache-Control": "no-cache", // STBEMU: Evitar cache de firewalls
             "Connection": "Keep-Alive"
         }
     };
 };
+
+// --- MÁQUINA DE IPs PERSISTENTES (MEO, NOS, VODAFONE) ---
+function getPersistentIP(config) {
+    const seed = `${config.url}_${config.mac}`;
+    const hash = crypto.createHash('md5').update(seed).digest('hex');
+    
+    const providers = [
+        { name: 'MEO', range: [188, 81] },
+        { name: 'NOS', range: [89, 152] },
+        { name: 'VDF', range: [94, 60] }
+    ];
+    
+    const providerIndex = parseInt(hash.substring(0, 2), 16) % providers.length;
+    const provider = providers[providerIndex];
+    
+    const octet3 = parseInt(hash.substring(2, 4), 16);
+    const octet4 = parseInt(hash.substring(4, 6), 16);
+    
+    const finalIP = `${provider.range[0]}.${provider.range[1]}.${octet3}.${octet4}`;
+    
+    return { ip: finalIP, ISP: provider.name };
+}
+// ---------------------------------------------------------
 
 const addon = {
     getAxiosOpts(config, extraOpts = {}) {
@@ -149,49 +154,92 @@ const addon = {
         }
     },
 
-async authenticate(config) {
-        const mac = config.mac.toUpperCase();
-        let baseUrl = config.url.trim().replace(/\/$/, "");
-        let cleanBase = baseUrl.replace(/portal\.php$/, "").replace(/\/$/, "");
-        const api = `${cleanBase}/portal.php?`;
-        
-        const magHeaders = {
-            'User-Agent': 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 424 Safari/533.3',
-            'X-User-Agent': 'Model: MAG424; SW: 2.20.05; Device ID: ' + crypto.createHash('md5').update(mac).digest('hex').toUpperCase(),
-            'Referer': `${cleanBase}/c/`,
-            'Accept': 'application/json, text/javascript, */*; q=0.01',
-            'X-Runtime-Info': 'render: gles; s_type: 424; s_ver: 0.2.20;',
-            'Cookie': `mac=${encodeURIComponent(mac)}; stb_lang=en; timezone=Europe/Lisbon;`
-        };
-
-        try {
-            // 1. Handshake
-            const authUrl = `${api}type=stb&action=handshake&mac=${encodeURIComponent(mac)}&JsHttpRequest=1`;
-            const res = await axios.get(authUrl, this.getAxiosOpts(config, { headers: magHeaders }));
-            let body = typeof res.data === 'string' ? JSON.parse(res.data.replace(/\/\*[\s\S]*?\*\//g, "").trim()) : res.data;
-
-            const token = body?.js?.token || "";
-            if (!token) throw new Error("Token não obtido");
-
-            magHeaders.Authorization = `Bearer ${token}`;
-            magHeaders.Cookie += ` token=${token};`;
-
-            // 2. Get Profile (Obrigatório)
-            const profileUrl = `${api}type=stb&action=get_profile&token=${token}&JsHttpRequest=1`;
-            await axios.get(profileUrl, this.getAxiosOpts(config, { headers: magHeaders }));
-
-            // 3. Get Localization (O GATILHO: Muitos servidores só mostram canais após isto)
-            const locUrl = `${api}type=stb&action=get_localization&token=${token}&JsHttpRequest=1`;
-            await axios.get(locUrl, this.getAxiosOpts(config, { headers: magHeaders }));
-
-            console.log(`[AUTH SUCCESS] Sessão total inicializada para: ${mac}`);
-            return { api, token, authData: { sn: body?.js?.sn || "00000000000000", headers: magHeaders } };
-        } catch (e) {
-            console.error("[AUTH ERROR]", e.message);
-            return null;
-        }
-  },
+    async authenticate(config) {
+    const mac = config.mac.toUpperCase();
+    const cleanBase = config.url.trim().replace(/\/$/, "");
     
+    // --- VERIFICAÇÃO DE CACHE ---
+    const cacheKey = `auth_${cleanBase}_${mac}`;
+    if (authCache.has(cacheKey)) {
+        const cached = authCache.get(cacheKey);
+        if (Date.now() - cached.timestamp < 10 * 60 * 1000) { // 10 minutos
+            return cached.data;
+        }
+    }
+
+    const fakeResidencialIP = '188.81.121.45';
+    const deviceId  = crypto.createHash('md5').update(mac).digest('hex').toUpperCase();
+    const shortHash = crypto.createHash('md5').update(mac).digest('hex').substring(0, 13).toUpperCase();
+    const serialNumber = `8CA3${shortHash.substring(4)}`; 
+
+    const universalHeaders = {
+        'User-Agent': 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3',
+        'X-User-Agent': `Model: MAG250; SW: 2.18-r14-pub-250; STB_active: true; Device ID: ${deviceId}; Device ID 2: ${deviceId}; Signature: 88e76854; SN: ${serialNumber}`,
+        'Referer': `${cleanBase}/c/`,
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'X-Runtime-Info': 'render: gles; s_type: 250; s_ver: 0.2.18-r14;',
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-Forwarded-For': fakeResidencialIP,
+        'X-Real-IP': fakeResidencialIP,
+        'Client-IP': fakeResidencialIP,
+        'Cookie': `mac=${encodeURIComponent(mac)}; stb_lang=en; timezone=Europe/Lisbon;`
+    };
+
+    const paths = [
+        '/c/portal.php',
+        '/portal.php',
+        '/server/load.php',
+        '/stalker_portal/server/load.php'
+    ];
+
+    console.log(`[STB-EMU MODE] Tentando enganar portal: ${cleanBase}`);
+
+    for (const path of paths) {
+        const fullUrl = `${cleanBase}${path}?`;
+        try {
+            const handshakeUrl = `${fullUrl}type=stb&action=handshake&mac=${encodeURIComponent(mac)}&JsHttpRequest=1-0`;
+            const res = await axios.get(handshakeUrl, this.getAxiosOpts(config, { headers: universalHeaders, timeout: 5000 }));
+            
+            let data = res.data;
+            if (typeof data === 'string') {
+                data = JSON.parse(data.replace(/\/\*[\s\S]*?\*\//g, "").trim());
+            }
+
+            if (data?.js?.token) {
+                const token = data.js.token;
+                console.log(`[AUTH SUCCESS] Servidor enganado em: ${path}`);
+
+                universalHeaders.Authorization = `Bearer ${token}`;
+                universalHeaders.Cookie += ` token=${token}; access_token=${token};`;
+
+                try {
+                    await axios.get(`${fullUrl}type=stb&action=get_profile&token=${token}&JsHttpRequest=1-0`, 
+                        this.getAxiosOpts(config, { headers: universalHeaders }));
+                } catch (e) { }
+
+                const result = { 
+                    api: fullUrl, 
+                    token, 
+                    authData: { 
+                        sn: data.js.sn || deviceId.substring(0, 13), 
+                        headers: universalHeaders 
+                    } 
+                };
+
+                // --- GUARDAR NO CACHE ---
+                authCache.set(cacheKey, { data: result, timestamp: Date.now() });
+
+                return result;
+            }
+        } catch (e) {
+            console.warn(`[AUTH SCAN] ${path} recusado (Status: ${e.response?.status || 'OFFLINE'})`);
+        }
+    }
+
+    console.error(`[AUTH FATAL] Nenhum caminho ou perfil funcionou para este MAC.`);
+    return null;
+},
+
     async getManifest(configBase64) {
         console.log("[MANIFEST] Pedido de Manifest recebido.");
         const cacheKey = `manifest_${configBase64}`;
@@ -204,86 +252,130 @@ async authenticate(config) {
                 if (l.type === 'xtream') {
                     const b = l.url.trim().replace(/\/$/, "");
                     const api = `${b}/player_api.php?username=${encodeURIComponent(l.user)}&password=${encodeURIComponent(l.pass)}`;
-                    const f = async (a) => { const r = await axios.get(`${api}&action=${a}`, this.getAxiosOpts(l, { timeout: 5000 })); return Array.isArray(r.data) ? r.data.map(g => g.category_name) : []; };
+                    const f = async (a) => { 
+                        try {
+                            const r = await axios.get(`${api}&action=${a}`, this.getAxiosOpts(l, { timeout: 5000 })); 
+                            return Array.isArray(r.data) ? r.data.map(g => g.category_name) : []; 
+                        } catch(e) { return []; }
+                    };
                     const [c1, c2, c3] = await Promise.all([f('get_live_categories'), f('get_vod_categories'), f('get_series_categories')]);
                     tvG = tvG.concat(c1); movG = movG.concat(c2); serG = serG.concat(c3);
                 } else {
                     const auth = await addon.authenticate(l);
                     if (auth) {
-                        const fetchSt = async (t, a) => {
-                            const r = await fetchWithRetry(`${auth.api}type=${t}&action=${a}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1`, this.getAxiosOpts(l, { headers: auth.authData.headers }));
-                            const items = r?.data?.js?.data || r?.data?.js || [];
-                            return (Array.isArray(items) ? items : Object.values(items)).map(g => g.title || g.name).filter(Boolean);
+                        // Função de extração com fallback universal para Stalker
+                        const fetchSt = async (t, a, fb) => {
+                            try {
+                                let r = await axios.get(`${auth.api}type=${t}&action=${a}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, this.getAxiosOpts(l, { headers: auth.authData.headers, timeout: 5000 }));
+                                let items = r.data?.js?.data || r.data?.js || [];
+                                
+                                // Se a primeira tentativa falhar ou vier vazia, tenta o fallback
+                                if ((!items || (Array.isArray(items) && items.length === 0)) && fb) {
+                                    r = await axios.get(`${auth.api}type=${t}&action=${fb}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, this.getAxiosOpts(l, { headers: auth.authData.headers, timeout: 5000 }));
+                                    items = r.data?.js?.data || r.data?.js || [];
+                                }
+                                return (Array.isArray(items) ? items : Object.values(items)).map(g => g.title || g.name).filter(Boolean);
+                            } catch(e) { return []; }
                         };
-                        const [g1, g2, g3] = await Promise.all([fetchSt('itv', 'get_genres'), fetchSt('vod', 'get_categories'), fetchSt('series', 'get_categories')]);
+
+                        // Executa as buscas de forma independente para não quebrar o manifest
+                        const [g1, g2, g3] = await Promise.all([
+                            fetchSt('itv', 'get_genres', 'get_categories'), 
+                            fetchSt('vod', 'get_categories', 'get_genres'), 
+                            fetchSt('series', 'get_categories', 'get_genres')
+                        ]);
                         tvG = tvG.concat(g1); movG = movG.concat(g2); serG = serG.concat(g3);
                     }
                 }
             } catch(e) { console.error(`[MANIFEST ERROR] Falha ao carregar categorias da lista ${i}:`, e.message); }
-            catalogs.push({ type: "tv", id: `cat_${i}`, name: l.name || `Lista ${i+1}`, extra: [{ name: "genre", options: tvG.filter(Boolean) }, { name: "skip" }] });
-            catalogs.push({ type: "movie", id: `mov_${i}`, name: `${l.name || `Lista ${i+1}`} 🎬`, extra: [{ name: "genre", options: movG.filter(Boolean) }, { name: "skip" }] });
-            catalogs.push({ type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿`, extra: [{ name: "genre", options: serG.filter(Boolean) }, { name: "skip" }] });
+            
+            // Filtra duplicados e valores nulos para garantir que o menu apareça limpo no Stremio
+            catalogs.push({ type: "tv", id: `cat_${i}`, name: l.name || `Lista ${i+1}`, extra: [{ name: "genre", options: [...new Set(tvG.filter(Boolean))] }, { name: "skip" }] });
+            catalogs.push({ type: "movie", id: `mov_${i}`, name: `${l.name || `Lista ${i+1}`} 🎬`, extra: [{ name: "genre", options: [...new Set(movG.filter(Boolean))] }, { name: "skip" }] });
+            catalogs.push({ type: "series", id: `ser_${i}`, name: `${l.name || `Lista ${i+1}`} 🍿`, extra: [{ name: "genre", options: [...new Set(serG.filter(Boolean))] }, { name: "skip" }] });
         }));
         const addonName = lists.map(l => l.name).filter(Boolean).join(" + ") || "XuloV Hub";
-        const m = { id: "org.xulov.stalker", version: "5.3.4", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
+        const m = { id: "org.xulov.stalker", version: "5.3.0", name: addonName, resources: ["catalog", "stream", "meta"], types: ["tv", "movie", "series"], idPrefixes: ["xlv:"], catalogs: catalogs };
         setCache(cacheKey, m, 60); 
         console.log("[MANIFEST] Manifest gerado com sucesso.");
         return m;
-    }, 
-
+    },
+    
     async getCatalog(type, id, extra, configBase64) {
+        console.log(`[CATALOG] Pedido: type=${type}, id=${id}, genre=${extra.genre || 'N/A'}, skip=${extra.skip || 0}`);
         const lists = this.parseConfig(configBase64);
         const lIdx = parseInt(id.split('_')[1]);
         const config = lists[lIdx]; if (!config) return { metas: [] };
+        
         const listSig = crypto.createHash('md5').update(config.url).digest('hex').substring(0,4);
         const skip = parseInt(extra.skip) || 0;
         let metas = [];
-
         try {
-            const auth = await this.authenticate(config);
-            if (auth) {
-                const sType = type === "tv" ? "itv" : (type === "movie" ? "vod" : "series");
-                const itemsPerPage = 60;
-                const page = Math.floor(skip / itemsPerPage) + 1;
-                
-                // Tentativa com action=get_ordered_list que é a mais universal
-                let sAct = (type === "tv") ? "get_all_channels" : "get_ordered_list";
-                let catParam = (type === "tv") ? "" : "&category=0";
-                
-                const url = `${auth.api}type=${sType}&action=${sAct}${catParam}&p=${page}&per_page=${itemsPerPage}&token=${auth.token}&JsHttpRequest=1`;
-                
-                const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, responseType: 'text' });
-                let res = await fetchWithRetry(url, opts);
-                let bodyData = res.data;
-
-                if (typeof bodyData === 'string') {
-                    bodyData = bodyData.replace(/\/\*[\s\S]*?\*\//g, "").trim();
-                    try { bodyData = JSON.parse(bodyData); } catch(e) { bodyData = {}; }
+            if (config.type === 'xtream') {
+                const b = config.url.trim().replace(/\/$/, "");
+                const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
+                let act = type === "tv" ? "get_live_streams" : (type === "movie" ? "get_vod_streams" : "get_series");
+                if (extra.genre && extra.genre !== "Predefinido") {
+                    const cAct = type === "tv" ? "get_live_categories" : (type === "movie" ? "get_vod_categories" : "get_series_categories");
+                    const cRes = await axios.get(`${api}&action=${cAct}`, this.getAxiosOpts(config, {timeout: 5000}));
+                    const cat = (cRes.data || []).find(c => c.category_name === extra.genre);
+                    if (cat) act += `&category_id=${cat.category_id}`;
                 }
+                const res = await axios.get(`${api}&action=${act}`, this.getAxiosOpts(config, {timeout: 10000}));
+                metas = (Array.isArray(res.data) ? res.data : []).slice(skip, skip + 100).map(item => ({
+                    id: `xlv:${lIdx}_${listSig}:${item.stream_id || item.series_id}${type === 'movie' ? '.' + (item.container_extension || 'mp4') : ''}:${encodeURIComponent(item.name || item.title)}:${encodeURIComponent(item.stream_icon || item.cover || '')}`,
+                    name: item.name || item.title, type: type, poster: item.stream_icon || item.cover, posterShape: type === "tv" ? "landscape" : "poster"
+                }));
+            } else {
+                const auth = await addon.authenticate(config);
+                if (auth) {
+                    const sType = type === "tv" ? "itv" : (type === "movie" ? "vod" : "series");
+                    let catP = "";
+                    
+                    if (extra.genre && extra.genre !== "Predefinido") {
+                        // Lógica Universal: Tenta encontrar o ID da categoria em múltiplas ações
+                        const actions = sType === "itv" ? ["get_genres", "get_categories"] : ["get_categories", "get_genres"];
+                        let cats = [];
+                        
+                        for (const act of actions) {
+                            try {
+                                const cRes = await axios.get(`${auth.api}type=${sType}&action=${act}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 }));
+                                const found = cRes.data?.js?.data || cRes.data?.js || [];
+                                const tempCats = Array.isArray(found) ? found : Object.values(found);
+                                if (tempCats.length > 0) {
+                                    cats = tempCats;
+                                    break; // Se encontrou algo, para de procurar
+                                }
+                            } catch(e) { continue; }
+                        }
+                        
+                        const cat = cats.find(c => (c.title || c.name) === extra.genre);
+                        if (cat) catP = sType === "itv" ? `&genre=${cat.id}` : `&category=${cat.id}`;
+                    }
 
-                // Se o JS vier dentro de JS (comum em Stalker)
-                let raw = bodyData?.js?.data || bodyData?.js || [];
-                if (!Array.isArray(raw)) raw = Object.values(raw).filter(x => x && typeof x === 'object');
-
-                console.log(`[CATALOG] ${type.toUpperCase()} -> Encontrados ${raw.length} itens.`);
-
-                const paged = raw.slice(skip % itemsPerPage, (skip % itemsPerPage) + 20);
-                metas = paged.filter(i => i && (i.id || i.cmd)).map(m => {
-                    const img = m.logo || m.screenshot_uri || '';
-                    return {
-                        id: `xlv:${lIdx}_${listSig}:${encodeURIComponent(m.cmd || m.id)}:${encodeURIComponent(m.name || m.title)}:${encodeURIComponent(img)}`,
-                        name: m.name || m.title, 
-                        type, 
-                        poster: img, 
-                        posterShape: type === "tv" ? "landscape" : "poster"
-                    };
-                });
+                    let sAct = "get_ordered_list"; 
+                    const page = Math.floor(skip / 14) + 1;
+                    
+                    let chCheckCat = type === "tv" ? "&force_ch_link_check=1" : "";
+                    const url = `${auth.api}type=${sType}&action=${sAct}${catP}&p=${page}&sn=${auth.authData.sn}&token=${auth.token}${chCheckCat}&JsHttpRequest=1-0`;
+                    
+                    const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 }));
+                    const raw = res.data?.js?.data || res.data?.js || [];
+                    
+                    metas = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => {
+                        let targetId = (type === "series") ? (m.id || m.cmd) : (m.cmd || m.id);
+                        return {
+                            id: `xlv:${lIdx}_${listSig}:${encodeURIComponent(targetId)}:${encodeURIComponent(m.name || m.title)}:${encodeURIComponent(m.logo || m.screenshot_uri || '')}`,
+                            name: m.name || m.title, type: type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
+                        };
+                    });
+                }
             }
-        } catch (e) { console.error(`[CATALOG ERROR]`, e.message); }
+        } catch (e) { console.error(`[CATALOG ERROR] Erro ao carregar catálogo:`, e.message); }
         return { metas };
     },
 
-    async getMeta(type, id, configBase64) {
+   async getMeta(type, id, configBase64) {
         console.log(`[META] Pedido: type=${type}, id=${id}`);
         const parts = id.split(":");
         
@@ -400,16 +492,16 @@ async authenticate(config) {
                 } else {
                     const auth = await addon.authenticate(config);
                     if (auth) {
-                        const apiBase = `${auth.api}sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1`;
-                        const opts = this.getAxiosOpts(config, { headers: auth.authData.headers });
+                        const apiBase = `${auth.api}sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`;
+                        const opts = this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 });
 
-                        let rFirst = await fetchWithRetry(`${apiBase}&type=series&action=get_ordered_list&movie_id=${sId}`, opts);
-                        let levels = rFirst?.data?.js?.data || rFirst?.data?.js || [];
+                        let rFirst = await axios.get(`${apiBase}&type=series&action=get_ordered_list&movie_id=${sId}`, opts);
+                        let levels = rFirst.data?.js?.data || rFirst.data?.js || [];
                         levels = Array.isArray(levels) ? levels : Object.values(levels);
 
                         if (levels.length === 0) {
-                            let rSecond = await fetchWithRetry(`${apiBase}&type=vod&action=get_ordered_list&movie_id=${sId}`, opts);
-                            let levelsSecond = rSecond?.data?.js?.data || rSecond?.data?.js || [];
+                            let rSecond = await axios.get(`${apiBase}&type=vod&action=get_ordered_list&movie_id=${sId}`, opts);
+                            let levelsSecond = rSecond.data?.js?.data || rSecond.data?.js || [];
                             levels = Array.isArray(levelsSecond) ? levelsSecond : Object.values(levelsSecond);
                         }
 
@@ -425,8 +517,8 @@ async authenticate(config) {
                             if (item.series) {
                                 seriesArr = typeof item.series === 'string' ? item.series.split(',') : (Array.isArray(item.series) ? item.series : []);
                             } else {
-                                let rInfo = await fetchWithRetry(`${apiBase}&type=vod&action=get_movie_info&movie_id=${item.id || item.cmd}`, opts);
-                                let info = rInfo?.data?.js;
+                                let rInfo = await axios.get(`${apiBase}&type=vod&action=get_movie_info&movie_id=${item.id || item.cmd}`, opts);
+                                let info = rInfo.data?.js;
                                 if (info && info.series) {
                                     seriesArr = typeof info.series === 'string' ? info.series.split(',') : (Array.isArray(info.series) ? info.series : []);
                                 }
@@ -461,12 +553,14 @@ async authenticate(config) {
                         }
 
                         if (meta.videos.length === 0) {
-                            let rInfoDirect = await fetchWithRetry(`${apiBase}&type=vod&action=get_movie_info&movie_id=${sId}`, opts);
-                            let infoDirect = rInfoDirect?.data?.js;
+                            console.log(`[META] Nenhuma pasta encontrada para ${sId}. Tentando busca direta...`);
+                            
+                            let rInfoDirect = await axios.get(`${apiBase}&type=vod&action=get_movie_info&movie_id=${sId}`, opts);
+                            let infoDirect = rInfoDirect.data?.js;
                             
                             if (!infoDirect || (!infoDirect.series && !infoDirect.cmd)) {
-                                 let rInfoSer = await fetchWithRetry(`${apiBase}&type=series&action=get_movie_info&movie_id=${sId}`, opts);
-                                 infoDirect = rInfoSer?.data?.js || infoDirect;
+                                 let rInfoSer = await axios.get(`${apiBase}&type=series&action=get_movie_info&movie_id=${sId}`, opts);
+                                 infoDirect = rInfoSer.data?.js || infoDirect;
                             }
 
                             let seriesArrDirect = [];
@@ -506,59 +600,190 @@ async authenticate(config) {
                         meta.videos.sort((a, b) => (a.season - b.season) || (a.episode - b.episode));
                     }
                 }
-            } catch (e) { console.error(`[META ERROR] Erro:`, e.message); }
+            } catch (e) { console.error(`[META ERROR] Erro ao extrair info da série ${id}:`, e.message); }
 
             if (meta.videos.length === 0) {
+                console.warn(`[META WARNING] Nenhum episódio encontrado para a série: ${id}`);
                 meta.videos.push({
                     id: `xlv:${lIdx}_${listSig}:empty:empty`,
                     title: "Nenhum episódio encontrado ou servidor instável",
                     season: 1, episode: 1
                 });
+            } else {
+                console.log(`[META] Série processada com sucesso: ${meta.videos.length} episódios encontrados.`);
             }
         }
         return { meta };
     },
 
-    async getStreams(type, id, configBase64) {
-    const [prefix, lIdxSig, streamId, name, poster] = id.split(':');
-    const lIdx = parseInt(lIdxSig.split('_')[0]);
-    const lists = this.parseConfig(configBase64);
-    const config = lists[lIdx];
-    if (!config) return { streams: [] };
+  async getStreams(type, id, configBase64, host) {
+        console.log(`[STREAMS] Pedido de stream: type=${type}, id=${id}`);
+        
+        if (type === "series") {
+            await new Promise(resolve => setTimeout(resolve, 2500));
+        }
 
-    try {
-        if (config.type === 'xtream') {
-            // ... lógica xtream ...
-        } else {
-            const auth = await addon.authenticate(config);
-            if (auth) {
-                const sType = type === "tv" ? "itv" : (type === "movie" ? "vod" : "series");
-                // Pedir o link real ao servidor Stalker
-                const url = `${auth.api}type=${sType}&action=create_link&cmd=${streamId}&mac=${encodeURIComponent(config.mac)}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1`;
-                
-                const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers }));
-                let body = res.data;
-                if (typeof body === 'string') {
-                    body = JSON.parse(body.replace(/\/\*[\s\S]*?\*\//g, "").trim());
-                }
+        const parts = id.split(":"); 
+        
+        const lIdxParts = parts[1].split("_");
+        const lIdx = parseInt(lIdxParts[0]);
+        const sig = lIdxParts[1];
+        
+        const sId = parts[2];
+        const name = decodeURIComponent(parts[3] || "Stream");
+        const lists = this.parseConfig(configBase64); const config = lists[lIdx];
+        
+        if (!config) return { streams: [] };
+        const expectedSig = crypto.createHash('md5').update(config.url).digest('hex').substring(0,4);
+        if (sig && sig !== expectedSig) {
+            console.log(`[STREAMS] Pedido ignorado! Este botão pertence a outra lista.`);
+            return { streams: [] };
+        }
 
-                let videoUrl = body?.js?.cmd || body?.js || "";
-                if (videoUrl) {
-                    // Remover o prefixo 'ffrt ' ou 'ffmpeg ' que alguns painéis adicionam
-                    videoUrl = videoUrl.replace(/^(ffrt|ffmpeg|mpv)\s+/, "");
+        const pUrl = `https://${host}/proxy/${encodeURIComponent(configBase64)}/${lIdx}/${encodeURIComponent(sId)}?type=${type}`;
+
+        let streams = [];
+        let directAdded = false;
+
+        if (config?.type === 'xtream') {
+            const b = config.url.trim().replace(/\/$/, "");
+            if (type === 'tv') {
+                streams.push({ name: name, url: `${b}/${config.user}/${config.pass}/${sId}`, title: `📺 Directo TV`, behaviorHints: { notWebReady: true } });
+            } else if (type === 'movie') {
+                streams.push({ name: name, url: `${b}/movie/${config.user}/${config.pass}/${sId}`, title: `🎬 Directo Filme`, behaviorHints: { notWebReady: true } });
+            } else if (type === 'series') {
+                streams.push({ name: name, url: `${b}/series/${config.user}/${config.pass}/${sId}`, title: `🍿 Directo Série - ${name}`, behaviorHints: { notWebReady: true } });
+            }
+            console.log(`[STREAMS] Link gerado (Xtream): ${type}`);
+        } 
+        else {
+            try {
+                let auth = await addon.authenticate(config);
+                if (auth) {
+                    const decodedCmd = decodeURIComponent(sId);
                     
-                    return {
-                        streams: [{
-                            title: decodeURIComponent(name),
-                            url: videoUrl,
-                            behaviorHints: { notWebReady: true, proxyHeaders: { "User-Agent": auth.authData.headers['User-Agent'] } }
-                        }]
+                    let realCmd = decodedCmd;
+                    let sNum = null;
+                    
+                    if (decodedCmd.includes('|||')) {
+                        let partsCmd = decodedCmd.split('|||');
+                        realCmd = partsCmd[0];
+                        sNum = partsCmd[1];
+                    } else if (decodedCmd.includes('|')) {
+                        let partsCmd = decodedCmd.split('|');
+                        realCmd = partsCmd[0];
+                        sNum = partsCmd[1];
+                    }
+
+                    const cmdType = (type === "movie" || type === "series") ? "vod" : "itv";
+                    let seriesParam = sNum ? `&series=${sNum}` : '';
+                    let chCheck = type === "tv" ? "&force_ch_link_check=1" : "";
+                    
+                    console.log(`[STREAMS] Stalker - Extraindo link para cmd/id=${realCmd}, series=${sNum || 'N/A'}`);
+
+                    const fetchStreamLink = async (currentAuth) => {
+                        let url = null;
+                        const opts = addon.getAxiosOpts(config, { headers: currentAuth.authData.headers, timeout: 5000 });
+                        
+                        let linkUrl = `${currentAuth.api}type=${cmdType}&action=create_link&cmd=${encodeURIComponent(realCmd)}${seriesParam}&sn=${currentAuth.authData.sn}&token=${currentAuth.token}${chCheck}&JsHttpRequest=1-0`;
+                        let res = await axios.get(linkUrl, opts).catch(() => ({}));
+                        let jsData = res.data?.js;
+                        url = jsData?.cmd || jsData?.url || (typeof jsData === 'string' ? jsData : null);
+                        if (!url && typeof jsData === 'object' && jsData !== null) {
+                            url = Object.values(jsData).find(v => typeof v === 'string' && (v.startsWith('http') || v.includes('://')));
+                        }
+                        if (!url || url.trim() === "") {
+                            let linkUrlId = `${currentAuth.api}type=${cmdType}&action=create_link&video_id=${encodeURIComponent(realCmd)}${seriesParam}&sn=${currentAuth.authData.sn}&token=${currentAuth.token}${chCheck}&JsHttpRequest=1-0`;
+                            let resId = await axios.get(linkUrlId, opts).catch(() => ({}));
+                            let jsDataId = resId.data?.js;
+                            url = jsDataId?.cmd || jsDataId?.url || (typeof jsDataId === 'string' ? jsDataId : null);
+                        }
+                        if ((!url || url.trim() === "") && type === "series") {
+                            let linkUrlSeries = `${currentAuth.api}type=series&action=create_link&video_id=${encodeURIComponent(realCmd)}${seriesParam}&sn=${currentAuth.authData.sn}&token=${currentAuth.token}${chCheck}&JsHttpRequest=1-0`;
+                            let resSeries = await axios.get(linkUrlSeries, opts).catch(() => ({}));
+                            let jsDataSeries = resSeries.data?.js;
+                            url = jsDataSeries?.cmd || jsDataSeries?.url || (typeof jsDataSeries === 'string' ? jsDataSeries : null);
+                        }
+                        if ((!url || url.trim() === "") && (type === "series" || type === "movie")) {
+                            let linkUrlMovie = `${currentAuth.api}type=vod&action=create_link&movie_id=${encodeURIComponent(realCmd)}${seriesParam}&sn=${currentAuth.authData.sn}&token=${currentAuth.token}${chCheck}&JsHttpRequest=1-0`;
+                            let resMovie = await axios.get(linkUrlMovie, opts).catch(() => ({}));
+                            let jsDataMovie = resMovie.data?.js;
+                            url = jsDataMovie?.cmd || jsDataMovie?.url || (typeof jsDataMovie === 'string' ? jsDataMovie : null);
+                        }
+                        return url;
                     };
+
+                                        let cmdUrl = await fetchStreamLink(auth);
+
+                    if (!cmdUrl || cmdUrl.trim() === "") {
+                        console.log(`[STREAMS] Link não recebido. Possível token/sessão expirada. Forçando novo token...`);
+                        const authCacheKey = `auth_${config.url}_${config.mac || 'nomac'}`;
+                        delete memCache[authCacheKey]; 
+                        auth = await addon.authenticate(config); 
+                        if (auth) {
+                            cmdUrl = await fetchStreamLink(auth); 
+                        }
+                    }
+
+                                        if (typeof cmdUrl === 'string' && cmdUrl.trim() !== "") {
+                        console.log(`[STREAMS] Sucesso! URL original recebido: ${cmdUrl}`);
+                        let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+                        
+                        // 🛠️ INÍCIO DO FIX UNIVERSAL (Anti-Gaguez + Compatibilidade Total)
+                        try {
+                            let baseUrlFromCmd = realCmd.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+                            
+                            if (baseUrlFromCmd.startsWith('http') && cleanUrl.includes('?')) {
+                                let cmdObj = new URL(baseUrlFromCmd);
+                                let cleanObj = new URL(cleanUrl);
+                                
+                                let isLocal = cmdObj.hostname === 'localhost' || cmdObj.hostname === '127.0.0.1';
+                                let isSameHost = cleanObj.hostname === cmdObj.hostname;
+                                let firstFolder = cmdObj.pathname.split('/')[1]; 
+                                let hasDuplicatedPath = firstFolder && 
+                                                        cleanObj.pathname.indexOf('/' + firstFolder + '/') !== cleanObj.pathname.lastIndexOf('/' + firstFolder + '/');
+                                let hasMangledDomain = /\.[a-z]{2,}(:\d+)?\//i.test(cleanObj.pathname);
+
+                                if (!isLocal && isSameHost && cleanObj.pathname.endsWith(cmdObj.pathname) && (hasDuplicatedPath || hasMangledDomain)) {
+                                    let params = cleanUrl.substring(cleanUrl.indexOf('?'));
+                                    cleanUrl = baseUrlFromCmd + params;
+                                    console.log(`[STREAMS] FIX UNIVERSAL APLICADO: URL corrigido para: ${cleanUrl}`);
+                                }
+                            }
+                        } catch (e) {
+                            // Ignora silenciosamente se o URL for inválido para não quebrar os outros portais
+                        }
+                        // 🛠️ FIM DO FIX UNIVERSAL
+                        // (Não adicionamos link direto para Stalker – apenas o proxy)
+                   
+                    if (cleanUrl.includes('://')) {
+                            const titleStr = type === 'movie' ? '🎬 Directo Filme' : (type === 'series' ? `🍿 Directo Série - ${name}` : '⚡ Directo TV');
+                            streams.push({ name: name, url: cleanUrl, title: titleStr, behaviorHints: { notWebReady: true } });
+                            directAdded = true;
+                        }
+
+                    } else {
+                        console.warn(`[STREAMS WARNING] Nenhuma tentativa devolveu link válido para ${id}`);
+                    }
+
+                }
+            } catch(e) { 
+                console.error(`[STREAM ERROR] Falha no processo de link Stalker para ${id}:`, e.message); 
+            }
+
+            if (!directAdded) {
+                let fallbackUrl = decodeURIComponent(sId).split('|||')[0].split('|')[0].replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
+                if (fallbackUrl.startsWith('http')) {
+                    const titleStr = type === 'movie' ? '🎬 Directo Filme' : (type === 'series' ? `🍿 Directo Série - ${name}` : '⚡ Directo TV');
+                    streams.push({ name: name, url: fallbackUrl, title: titleStr, behaviorHints: { notWebReady: true } });
+                    console.log(`[STREAMS] Aplicado fallback bruto direto.`);
                 }
             }
         }
-    } catch (e) { console.error(`[STREAM ERROR]`, e.message); }
-    return { streams: [] };
+        
+        const proxyTitle = type === 'movie' ? '🎬 Proxy Estável' : (type === 'series' ? `🍿 Proxy Estável - ${name}` : '🔄 Proxy Estável');
+        streams.push({ name: name, url: pUrl, title: proxyTitle, behaviorHints: { notWebReady: true } });
+        return { streams };
     }
 };
 
