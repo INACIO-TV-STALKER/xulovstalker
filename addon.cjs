@@ -725,7 +725,7 @@ const addon = {
                         }
                     }
 
-                                        if (typeof cmdUrl === 'string' && cmdUrl.trim() !== "") {
+                    if (typeof cmdUrl === 'string' && cmdUrl.trim() !== "") {
                         console.log(`[STREAMS] Sucesso! URL original recebido: ${cmdUrl}`);
                         let cleanUrl = cmdUrl.replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                         
@@ -737,13 +737,21 @@ const addon = {
                                 let cmdObj = new URL(baseUrlFromCmd);
                                 let cleanObj = new URL(cleanUrl);
                                 
+                                // 1. Protege os portais normais: se o comando original for localhost, ignoramos o fix!
                                 let isLocal = cmdObj.hostname === 'localhost' || cmdObj.hostname === '127.0.0.1';
+                                
+                                // 2. Garante que só mexemos se o servidor final partilhar o mesmo domínio base
                                 let isSameHost = cleanObj.hostname === cmdObj.hostname;
+                                
+                                // 3. Deteta se a pasta principal foi duplicada no caminho (ex: /MBA15... aparece 2 vezes)
                                 let firstFolder = cmdObj.pathname.split('/')[1]; 
                                 let hasDuplicatedPath = firstFolder && 
                                                         cleanObj.pathname.indexOf('/' + firstFolder + '/') !== cleanObj.pathname.lastIndexOf('/' + firstFolder + '/');
+                                
+                                // 4. Deteta se há um domínio estragado metido no meio das pastas (ex: ium.space:80/)
                                 let hasMangledDomain = /\.[a-z]{2,}(:\d+)?\//i.test(cleanObj.pathname);
 
+                                // Aplica o fix APENAS se não for localhost, os domínios baterem certo, e houver prova do "bug" do portal
                                 if (!isLocal && isSameHost && cleanObj.pathname.endsWith(cmdObj.pathname) && (hasDuplicatedPath || hasMangledDomain)) {
                                     let params = cleanUrl.substring(cleanUrl.indexOf('?'));
                                     cleanUrl = baseUrlFromCmd + params;
@@ -754,9 +762,8 @@ const addon = {
                             // Ignora silenciosamente se o URL for inválido para não quebrar os outros portais
                         }
                         // 🛠️ FIM DO FIX UNIVERSAL
-                        // (Não adicionamos link direto para Stalker – apenas o proxy)
-                   
-                    if (cleanUrl.includes('://')) {
+
+                        if (cleanUrl.includes('://')) {
                             const titleStr = type === 'movie' ? '🎬 Directo Filme' : (type === 'series' ? `🍿 Directo Série - ${name}` : '⚡ Directo TV');
                             streams.push({ name: name, url: cleanUrl, title: titleStr, behaviorHints: { notWebReady: true } });
                             directAdded = true;
