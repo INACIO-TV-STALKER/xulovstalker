@@ -1,3 +1,5 @@
+//addon.cjs do render!!!
+
 const axios = require("axios");
 const crypto = require("crypto");
 const https = require('https'); 
