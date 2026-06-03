@@ -1,12 +1,10 @@
-//addon.cjs 27 Maio sem filtro categorias!!
+//addon.cjs do render!!!
 
 const axios = require("axios");
 const crypto = require("crypto");
 const https = require('https'); 
 const { SocksProxyAgent } = require('socks-proxy-agent');
 const authCache = new Map();
-const catalogCache = {};
-const CACHE_TTL = 1000 * 60 * 60 * 4;
 
 // Chave da API TMDB fornecida
 const TMDB_API_KEY = "04057ce87e56ea3234aff745ce9090ea";
@@ -146,29 +144,11 @@ const addon = {
         return opts;
     },
 
-            parseConfig(configBase64) {
+    parseConfig(configBase64) {
         try { 
             const decoded = Buffer.from(decodeURIComponent(configBase64), 'base64').toString('utf8');
             const data = JSON.parse(decoded);
-            
-            let lists = data.lists || [];
-            
-            lists = lists.map(list => {
-                if (list.url) {
-                    // 1. Limpa espaços e barras finais (ex: http://url.com/c/ -> http://url.com/c)
-                    list.url = list.url.trim().replace(/\/+$/, "");
-                    
-                    // 2. Interceta portais Stalker
-                    if (list.mac || list.type === 'stalker') {
-                        // Remove "/c" ou "/stalker_portal/c" do final do link que inseriste.
-                        // Assim a base fica 100% limpa para o teu scanner testar as várias hipóteses!
-                        list.url = list.url.replace(/\/(c|stalker_portal\/c|stalker_portal)$/i, "");
-                    }
-                }
-                return list;
-            });
-            
-            return lists; 
+            return data.lists || []; 
         } 
         catch (e) { 
             console.error("[CONFIG ERROR] Falha ao descodificar a configuração Base64:", e.message);
@@ -323,7 +303,7 @@ const addon = {
         return m;
     },
     
-        async getCatalog(type, id, extra, configBase64) {
+    async getCatalog(type, id, extra, configBase64) {
         console.log(`[CATALOG] Pedido: type=${type}, id=${id}, genre=${extra.genre || 'N/A'}, skip=${extra.skip || 0}`);
         const lists = this.parseConfig(configBase64);
         const lIdx = parseInt(id.split('_')[1]);
@@ -335,100 +315,65 @@ const addon = {
         try {
             if (config.type === 'xtream') {
                 const b = config.url.trim().replace(/\/$/, "");
-                const cacheKey = `xtream_${b}_${config.user}_${type}_${extra.genre || 'N/A'}`;
-                
-                let xtreamData;
-                if (catalogCache[cacheKey] && (Date.now() - catalogCache[cacheKey].lastUpdate < CACHE_TTL)) {
-                    console.log(`[CACHE SUCESSO] Usando dados em memória para Xtream ${type} (${extra.genre || 'N/A'})`);
-                    xtreamData = catalogCache[cacheKey].data;
-                } else {
-                    console.log(`[CACHE VAZIA/EXPIRADA] Buscando dados novos do portal Xtream para ${type}...`);
-                    const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
-                    let act = type === "tv" ? "get_live_streams" : (type === "movie" ? "get_vod_streams" : "get_series");
-                    if (extra.genre && extra.genre !== "Predefinido") {
-                        const cAct = type === "tv" ? "get_live_categories" : (type === "movie" ? "get_vod_categories" : "get_series_categories");
-                        const cRes = await axios.get(`${api}&action=${cAct}`, this.getAxiosOpts(config, {timeout: 5000}));
-                        const cat = (cRes.data || []).find(c => c.category_name === extra.genre);
-                        if (cat) act += `&category_id=${cat.category_id}`;
-                    }
-                    const res = await axios.get(`${api}&action=${act}`, this.getAxiosOpts(config, {timeout: 10000}));
-                    xtreamData = Array.isArray(res.data) ? res.data : [];
-                    catalogCache[cacheKey] = { data: xtreamData, lastUpdate: Date.now() };
+                const api = `${b}/player_api.php?username=${encodeURIComponent(config.user)}&password=${encodeURIComponent(config.pass)}`;
+                let act = type === "tv" ? "get_live_streams" : (type === "movie" ? "get_vod_streams" : "get_series");
+                if (extra.genre && extra.genre !== "Predefinido") {
+                    const cAct = type === "tv" ? "get_live_categories" : (type === "movie" ? "get_vod_categories" : "get_series_categories");
+                    const cRes = await axios.get(`${api}&action=${cAct}`, this.getAxiosOpts(config, {timeout: 5000}));
+                    const cat = (cRes.data || []).find(c => c.category_name === extra.genre);
+                    if (cat) act += `&category_id=${cat.category_id}`;
                 }
-
-                metas = xtreamData.slice(skip, skip + 100).map(item => ({
+                const res = await axios.get(`${api}&action=${act}`, this.getAxiosOpts(config, {timeout: 10000}));
+                metas = (Array.isArray(res.data) ? res.data : []).slice(skip, skip + 100).map(item => ({
                     id: `xlv:${lIdx}_${listSig}:${item.stream_id || item.series_id}${type === 'movie' ? '.' + (item.container_extension || 'mp4') : ''}:${encodeURIComponent(item.name || item.title)}:${encodeURIComponent(item.stream_icon || item.cover || '')}`,
                     name: item.name || item.title, type: type, poster: item.stream_icon || item.cover, posterShape: type === "tv" ? "landscape" : "poster"
                 }));
             } else {
-                const page = Math.floor(skip / 14) + 1;
-                const cacheKey = `stalker_${config.url}_${type}_${extra.genre || 'N/A'}_p${page}`;
-                
-                let stalkerData;
-                if (catalogCache[cacheKey] && (Date.now() - catalogCache[cacheKey].lastUpdate < CACHE_TTL)) {
-                    console.log(`[CACHE SUCESSO] Usando dados em memória para Stalker ${type} - Página ${page}`);
-                    stalkerData = catalogCache[cacheKey].data;
-                } else {
-                    console.log(`[CACHE VAZIA/EXPIRADA] Autenticando e buscando dados do portal Stalker para ${type} - Página ${page}...`);
-                    const auth = await addon.authenticate(config);
-                    if (auth) {
-                        // 🚨 Usamos estritamente a API exata validada pela função de autenticação
-                        const safeApi = auth.api; 
+                const auth = await addon.authenticate(config);
+                if (auth) {
+                    const sType = type === "tv" ? "itv" : (type === "movie" ? "vod" : "series");
+                    let catP = "";
+                    
+                    if (extra.genre && extra.genre !== "Predefinido") {
+                        // Lógica Universal: Tenta encontrar o ID da categoria em múltiplas ações
+                        const actions = sType === "itv" ? ["get_genres", "get_categories"] : ["get_categories", "get_genres"];
+                        let cats = [];
                         
-                        const sType = type === "tv" ? "itv" : (type === "movie" ? "vod" : "series");
-                        let catP = "";
-                        
-                        if (extra.genre && extra.genre !== "Predefinido") {
-                            const actions = sType === "itv" ? ["get_genres", "get_categories"] : ["get_categories", "get_genres"];
-                            let cats = [];
-                            
-                            for (const act of actions) {
-                                try {
-                                    // URL super limpo, sem parâmetros suspeitos
-                                    const cRes = await axios.get(`${safeApi}type=${sType}&action=${act}&JsHttpRequest=1-0`, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 }));
-                                    const found = cRes.data?.js?.data || cRes.data?.js || [];
-                                    const tempCats = Array.isArray(found) ? found : Object.values(found);
-                                    if (tempCats.length > 0) {
-                                        cats = tempCats;
-                                        break;
-                                    }
-                                } catch(e) { continue; }
-                            }
-                            
-                            const cat = cats.find(c => (c.title || c.name) === extra.genre);
-                            if (cat) catP = sType === "itv" ? `&genre=${cat.id}` : `&category=${cat.id}`;
+                        for (const act of actions) {
+                            try {
+                                const cRes = await axios.get(`${auth.api}type=${sType}&action=${act}&sn=${auth.authData.sn}&token=${auth.token}&JsHttpRequest=1-0`, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 5000 }));
+                                const found = cRes.data?.js?.data || cRes.data?.js || [];
+                                const tempCats = Array.isArray(found) ? found : Object.values(found);
+                                if (tempCats.length > 0) {
+                                    cats = tempCats;
+                                    break; // Se encontrou algo, para de procurar
+                                }
+                            } catch(e) { continue; }
                         }
-
-                        let sAct = "get_ordered_list"; 
-                        let chCheckCat = type === "tv" ? "&force_ch_link_check=1" : "";
                         
-                        // O Segredo: Deixar que o "auth.authData.headers" envie o MAC e o Token de forma invisível
-                        const url = `${safeApi}type=${sType}&action=${sAct}${catP}&p=${page}${chCheckCat}&JsHttpRequest=1-0`;
-                        
-                        const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 }));
-                        const raw = res.data?.js?.data || res.data?.js || [];
-                        stalkerData = Array.isArray(raw) ? raw : Object.values(raw);
-                        
-                        catalogCache[cacheKey] = { data: stalkerData, lastUpdate: Date.now() };
-                    } else {
-                        stalkerData = [];
+                        const cat = cats.find(c => (c.title || c.name) === extra.genre);
+                        if (cat) catP = sType === "itv" ? `&genre=${cat.id}` : `&category=${cat.id}`;
                     }
-                }
 
-                metas = stalkerData.filter(i => i && (i.id || i.cmd)).map(m => {
-                    let targetId = (type === "series") ? (m.id || m.cmd) : (m.cmd || m.id);
-                    return {
-                        id: `xlv:${lIdx}_${listSig}:${encodeURIComponent(targetId)}:${encodeURIComponent(m.name || m.title)}:${encodeURIComponent(m.logo || m.screenshot_uri || '')}`,
-                        name: m.name || m.title, type: type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
-                    };
-                });
+                    let sAct = "get_ordered_list"; 
+                    const page = Math.floor(skip / 14) + 1;
+                    
+                    let chCheckCat = type === "tv" ? "&force_ch_link_check=1" : "";
+                    const url = `${auth.api}type=${sType}&action=${sAct}${catP}&p=${page}&sn=${auth.authData.sn}&token=${auth.token}${chCheckCat}&JsHttpRequest=1-0`;
+                    
+                    const res = await axios.get(url, this.getAxiosOpts(config, { headers: auth.authData.headers, timeout: 10000 }));
+                    const raw = res.data?.js?.data || res.data?.js || [];
+                    
+                    metas = (Array.isArray(raw) ? raw : Object.values(raw)).filter(i => i && (i.id || i.cmd)).map(m => {
+                        let targetId = (type === "series") ? (m.id || m.cmd) : (m.cmd || m.id);
+                        return {
+                            id: `xlv:${lIdx}_${listSig}:${encodeURIComponent(targetId)}:${encodeURIComponent(m.name || m.title)}:${encodeURIComponent(m.logo || m.screenshot_uri || '')}`,
+                            name: m.name || m.title, type: type, poster: m.logo || m.screenshot_uri, posterShape: type === "tv" ? "landscape" : "poster"
+                        };
+                    });
+                }
             }
-        } catch (e) { 
-            console.error(`[CATALOG ERROR] Erro ao carregar catálogo:`, e.message); 
-            if (e.response && e.response.status === 400) {
-                console.error(`[DEBUG 400] O portal rejeitou este URL exato:`, e.config?.url || e.response?.config?.url);
-            }
-        }
+        } catch (e) { console.error(`[CATALOG ERROR] Erro ao carregar catálogo:`, e.message); }
         return { metas };
     },
 
@@ -693,7 +638,7 @@ const addon = {
         if (!config) return { streams: [] };
         const expectedSig = crypto.createHash('md5').update(config.url).digest('hex').substring(0,4);
         if (sig && sig !== expectedSig) {
-          //console.log(`[STREAMS] Pedido ignorado! Este botão pertence a outra lista.`);
+            console.log(`[STREAMS] Pedido ignorado! Este botão pertence a outra lista.`);
             return { streams: [] };
         }
 
@@ -707,9 +652,9 @@ const addon = {
             if (type === 'tv') {
                 streams.push({ name: name, url: `${b}/${config.user}/${config.pass}/${sId}`, title: `📺 Directo TV`, behaviorHints: { notWebReady: true } });
             } else if (type === 'movie') {
-                streams.push({ name: name, url: `${b}/movie/${config.user}/${config.pass}/${sId}`, title: `🎬 Directo Filme`, behaviorHints: { notWebReady: false } });
+                streams.push({ name: name, url: `${b}/movie/${config.user}/${config.pass}/${sId}`, title: `🎬 Directo Filme`, behaviorHints: { notWebReady: true } });
             } else if (type === 'series') {
-                streams.push({ name: name, url: `${b}/series/${config.user}/${config.pass}/${sId}`, title: `🍿 Directo Série - ${name}`, behaviorHints: { notWebReady: false } });
+                streams.push({ name: name, url: `${b}/series/${config.user}/${config.pass}/${sId}`, title: `🍿 Directo Série - ${name}`, behaviorHints: { notWebReady: true } });
             }
             console.log(`[STREAMS] Link gerado (Xtream): ${type}`);
         } 
@@ -822,7 +767,7 @@ const addon = {
 
                         if (cleanUrl.includes('://')) {
                             const titleStr = type === 'movie' ? '🎬 Directo Filme' : (type === 'series' ? `🍿 Directo Série - ${name}` : '⚡ Directo TV');
-                            streams.push({ name: name, url: cleanUrl, title: titleStr, behaviorHints: { notWebReady: type === 'tv' } });
+                            streams.push({ name: name, url: cleanUrl, title: titleStr, behaviorHints: { notWebReady: true } });
                             directAdded = true;
                         }
 
@@ -839,17 +784,16 @@ const addon = {
                 let fallbackUrl = decodeURIComponent(sId).split('|||')[0].split('|')[0].replace(/^(ffrt|ffmpeg|ffrt2|rtmp)\s+/, "").trim();
                 if (fallbackUrl.startsWith('http')) {
                     const titleStr = type === 'movie' ? '🎬 Directo Filme' : (type === 'series' ? `🍿 Directo Série - ${name}` : '⚡ Directo TV');
-                    streams.push({ name: name, url: fallbackUrl, title: titleStr, behaviorHints: { notWebReady: type === 'tv' } });
+                    streams.push({ name: name, url: fallbackUrl, title: titleStr, behaviorHints: { notWebReady: true } });
                     console.log(`[STREAMS] Aplicado fallback bruto direto.`);
                 }
             }
         }
         
         const proxyTitle = type === 'movie' ? '🎬 Proxy Estável' : (type === 'series' ? `🍿 Proxy Estável - ${name}` : '🔄 Proxy Estável');
-        streams.push({ name: name, url: pUrl, title: proxyTitle, behaviorHints: { notWebReady: type === 'tv' } });
+        streams.push({ name: name, url: pUrl, title: proxyTitle, behaviorHints: { notWebReady: true } });
         return { streams };
     }
 };
 
 module.exports = addon;
-//
